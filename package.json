@@ -18,6 +18,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node -e \"import('./dist/index.js').then(() => console.log('ok'))\"",
     "dev": "tsc --watch",
     "install-plugin": "bun src/cli/index.ts install",
     "doctor": "bun src/cli/index.ts doctor"

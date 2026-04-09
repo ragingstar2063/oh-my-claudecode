@@ -1,5 +1,11 @@
 # oh-my-claudecode
 
+[![npm version](https://img.shields.io/npm/v/oh-my-claudecode.svg)](https://www.npmjs.com/package/oh-my-claudecode)
+[![npm downloads](https://img.shields.io/npm/dw/oh-my-claudecode.svg)](https://www.npmjs.com/package/oh-my-claudecode)
+[![publish npm](https://github.com/ragingstar2063/oh-my-claudecode/actions/workflows/publish.yml/badge.svg)](https://github.com/ragingstar2063/oh-my-claudecode/actions/workflows/publish.yml)
+[![release](https://img.shields.io/github/v/release/ragingstar2063/oh-my-claudecode?display_name=tag)](https://github.com/ragingstar2063/oh-my-claudecode/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > *Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn.*
 
 A Cthulhu Mythos-themed agentic harness for [Claude Code](https://claude.ai/code). Provides 11 specialized Elder God agents, lifecycle hooks, a skill system, and multi-tier orchestration.
