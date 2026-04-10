@@ -11,7 +11,7 @@
   "files": [
     "dist",
     "bin",
-    "skills"
+    "commands"
   ],
   "bin": {
     "oh-my-claudecode": "bin/oh-my-claudecode.js"

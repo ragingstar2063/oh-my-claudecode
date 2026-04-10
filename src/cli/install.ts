@@ -6,7 +6,8 @@ import { ALL_HOOK_DEFINITIONS } from "../hooks/index.js"
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? ""
 const CLAUDE_DIR = path.join(HOME, ".claude")
 const HOOKS_DIR = path.join(CLAUDE_DIR, "hooks")
-const SKILLS_DIR = path.join(CLAUDE_DIR, "skills")
+const COMMANDS_DIR = path.join(CLAUDE_DIR, "commands")
+const LEGACY_SKILLS_DIR = path.join(CLAUDE_DIR, "skills")
 const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json")
 
 function ensureDir(dir: string): void {
@@ -78,26 +79,49 @@ function registerHooksInSettings(
   settings.hooks = hooks
 }
 
-/** Install skill files from the package */
-function installSkills(packageRoot: string, disabled: Set<string>): void {
-  ensureDir(SKILLS_DIR)
-  const skillsSourceDir = path.join(packageRoot, "skills")
-  if (!fs.existsSync(skillsSourceDir)) {
-    console.log("  No skills directory found in package — skipping")
+/** Install slash command markdown files from the package into ~/.claude/commands/ */
+function installCommands(packageRoot: string, disabled: Set<string>): void {
+  ensureDir(COMMANDS_DIR)
+  const commandsSourceDir = path.join(packageRoot, "commands")
+  if (!fs.existsSync(commandsSourceDir)) {
+    console.log("  No commands directory found in package — skipping")
     return
   }
 
-  const skillFiles = fs.readdirSync(skillsSourceDir).filter(f => f.endsWith(".md"))
-  for (const file of skillFiles) {
-    const skillName = path.basename(file, ".md")
-    if (disabled.has(skillName)) {
-      console.log(`  Skipping disabled skill: ${skillName}`)
+  const commandFiles = fs.readdirSync(commandsSourceDir).filter(f => f.endsWith(".md"))
+  for (const file of commandFiles) {
+    const commandName = path.basename(file, ".md")
+    if (disabled.has(commandName)) {
+      console.log(`  Skipping disabled command: /${commandName}`)
       continue
     }
-    const src = path.join(skillsSourceDir, file)
-    const dest = path.join(SKILLS_DIR, file)
+    const src = path.join(commandsSourceDir, file)
+    const dest = path.join(COMMANDS_DIR, file)
     fs.copyFileSync(src, dest)
-    console.log(`  Installed skill: ${skillName} → ${dest}`)
+    console.log(`  Installed command: /${commandName} → ${dest}`)
+  }
+}
+
+/**
+ * Clean up stray markdown files left by older buggy installs in ~/.claude/skills/.
+ * Earlier versions of the installer wrote slash commands to the wrong directory;
+ * this removes those stragglers so they don't confuse anything.
+ */
+function cleanupLegacySkillFiles(packageRoot: string): void {
+  if (!fs.existsSync(LEGACY_SKILLS_DIR)) return
+  const commandsSourceDir = path.join(packageRoot, "commands")
+  if (!fs.existsSync(commandsSourceDir)) return
+
+  const ourFileNames = new Set(
+    fs.readdirSync(commandsSourceDir).filter(f => f.endsWith(".md")),
+  )
+
+  for (const name of ourFileNames) {
+    const strayPath = path.join(LEGACY_SKILLS_DIR, name)
+    if (fs.existsSync(strayPath) && fs.statSync(strayPath).isFile()) {
+      fs.unlinkSync(strayPath)
+      console.log(`  Removed stray file from old install: ${strayPath}`)
+    }
   }
 }
 
@@ -137,7 +161,7 @@ export async function runInstall(options: {
   ensureDir(CLAUDE_DIR)
 
   let disabledHooks = new Set<string>()
-  let disabledSkills = new Set<string>()
+  let disabledCommands = new Set<string>()
 
   if (!noTui) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -161,9 +185,9 @@ export async function runInstall(options: {
       }
     }
 
-    const skillAnswer = await ask(rl, "\nInstall all skills (slash commands)? [Y/n] ")
-    if (skillAnswer.toLowerCase() === "n") {
-      disabledSkills = new Set(["all"])
+    const commandAnswer = await ask(rl, "\nInstall all slash commands? [Y/n] ")
+    if (commandAnswer.toLowerCase() === "n") {
+      disabledCommands = new Set(["all"])
     }
 
     rl.close()
@@ -183,10 +207,13 @@ export async function runInstall(options: {
   saveSettings(settings)
   console.log(`  Saved settings to ${SETTINGS_PATH}`)
 
-  // Install skills
-  if (!disabledSkills.has("all")) {
-    console.log("\n► Skills:")
-    installSkills(packageRoot, disabledSkills)
+  // Clean up stragglers left by older buggy installs that wrote to ~/.claude/skills/
+  cleanupLegacySkillFiles(packageRoot)
+
+  // Install slash commands
+  if (!disabledCommands.has("all")) {
+    console.log("\n► Slash commands:")
+    installCommands(packageRoot, disabledCommands)
   }
 
   // Create config
@@ -202,5 +229,6 @@ export async function runInstall(options: {
   console.log("║  Yog-Sothoth knows. R'lyeh has risen.                ║")
   console.log("╚══════════════════════════════════════════════════════╝")
   console.log(`\nConfig: ${path.join(CLAUDE_DIR, "oh-my-claudecode.jsonc")}`)
-  console.log("Run: claude (and invoke /cthulhu to start)\n")
+  console.log(`Commands: ${COMMANDS_DIR}`)
+  console.log("Start a new Claude Code session and type /cthulhu to begin.\n")
 }

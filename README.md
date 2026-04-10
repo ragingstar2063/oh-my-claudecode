@@ -16,7 +16,7 @@ oh-my-claudecode extends Claude Code with a complete agentic infrastructure:
 
 - **11 Elder God agents** each specialized for a different domain
 - **5 lifecycle hooks** for todo enforcement, completion loops, code quality, and context injection
-- **9 slash commands (skills)** for invoking agents and managing sessions
+- **9 slash commands** for invoking agents and managing sessions
 - **3-level config system** (defaults → user → project) with Zod validation
 - **Background agent management** with circuit breaker and concurrency limits
 - **Work plan system** with structured planning and review flow
@@ -46,7 +46,7 @@ npx oh-my-claudecode install
 The interactive wizard will:
 1. Install hook scripts to `~/.claude/hooks/`
 2. Register hooks in `~/.claude/settings.json`
-3. Install skill files to `~/.claude/skills/`
+3. Install slash command files to `~/.claude/commands/`
 4. Create `~/.claude/oh-my-claudecode.jsonc` config
 
 ### Non-interactive install
@@ -85,7 +85,7 @@ Instead, oh-my-claudecode agents are invoked through:
 
 1. **Slash commands** — `/cthulhu`, `/shoggoth`, etc. activate the named agent mode
 2. **Agent tool delegation** — Cthulhu uses `Agent(subagent_type="shoggoth", ...)` to spawn specialists
-3. **Skill-based dispatch** — skills installed to `~/.claude/skills/` are likely available as `subagent_type` values
+3. **Slash commands** — files in `~/.claude/commands/` are picked up by Claude Code as user-defined commands
 
 The agents are additive — they don't replace Claude Code's built-in agent types.
 
@@ -186,7 +186,7 @@ oh-my-claudecode/
 │   ├── plugin-handlers/      # 5-phase config pipeline
 │   ├── shared/               # Logging, deep-merge, model resolution
 │   └── cli/                  # Installer, doctor, list-agents
-├── skills/                   # Markdown slash commands
+├── commands/                 # Markdown slash commands (installed to ~/.claude/commands/)
 └── NECRONOMICON.md           # Plugin architecture reference
 ```
 
