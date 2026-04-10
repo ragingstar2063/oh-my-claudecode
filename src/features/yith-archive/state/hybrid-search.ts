@@ -1,9 +1,10 @@
-import { SearchIndex } from "./search-index.js";
+import { SearchIndex, MEMORY_SENTINEL_SESSION_ID } from "./search-index.js";
 import { VectorIndex } from "./vector-index.js";
 import type {
   EmbeddingProvider,
   HybridSearchResult,
   CompressedObservation,
+  Memory,
   QueryExpansion,
 } from "../types.js";
 import type { StateKV } from "./kv.js";
@@ -13,6 +14,7 @@ import {
   type GraphRetrievalResult,
 } from "../functions/graph-retrieval.js";
 import { extractEntitiesFromQuery } from "../functions/query-expansion.js";
+import { memoryToObservation } from "../functions/search.js";
 import { rerank } from "./reranker.js";
 
 const RRF_K = 60;
@@ -254,10 +256,16 @@ export class HybridSearch {
     const sessionCounts = new Map<string, number>();
 
     for (const r of results) {
-      const count = sessionCounts.get(r.sessionId) || 0;
-      if (count >= maxPerSession) continue;
+      // Memories share a sentinel sessionId; don't cap them by it,
+      // since they're not grouped by session and diversification
+      // over "__mem__" would arbitrarily drop relevant memory hits.
+      const isMemory = r.sessionId === MEMORY_SENTINEL_SESSION_ID;
+      if (!isMemory) {
+        const count = sessionCounts.get(r.sessionId) || 0;
+        if (count >= maxPerSession) continue;
+        sessionCounts.set(r.sessionId, count + 1);
+      }
       selected.push(r);
-      sessionCounts.set(r.sessionId, count + 1);
       if (selected.length >= limit) break;
     }
 
@@ -286,16 +294,26 @@ export class HybridSearch {
     limit: number,
   ): Promise<HybridSearchResult[]> {
     const sliced = results.slice(0, limit);
-    const observations = await Promise.all(
-      sliced.map((r) =>
-        this.kv
+    // Hydrate observations from their session scope and memories from
+    // KV.memories (marked by the sentinel sessionId). Memories are
+    // wrapped in a CompressedObservation-shaped envelope so the result
+    // type stays uniform for downstream consumers.
+    const documents = await Promise.all(
+      sliced.map(async (r) => {
+        if (r.sessionId === MEMORY_SENTINEL_SESSION_ID) {
+          const mem = await this.kv
+            .get<Memory>(KV.memories, r.obsId)
+            .catch(() => null);
+          return mem ? memoryToObservation(mem) : null;
+        }
+        return this.kv
           .get<CompressedObservation>(KV.observations(r.sessionId), r.obsId)
-          .catch(() => null),
-      ),
+          .catch(() => null);
+      }),
     );
     const enriched: HybridSearchResult[] = [];
     for (let i = 0; i < sliced.length; i++) {
-      const obs = observations[i];
+      const obs = documents[i];
       if (obs) {
         enriched.push({
           observation: obs,

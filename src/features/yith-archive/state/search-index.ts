@@ -1,11 +1,28 @@
-import type { CompressedObservation } from "../types.js";
+import type { CompressedObservation, Memory } from "../types.js";
 import { stem } from "./stemmer.js";
 import { getSynonyms } from "./synonyms.js";
+
+/**
+ * Sentinel sessionId used for memory documents in the BM25 index.
+ * Hydration callers in hybrid-search.ts and search.ts branch on this
+ * value to fetch from KV.memories instead of KV.observations(sessionId).
+ * Exposed so those callers can reference the constant rather than
+ * duplicating the literal.
+ */
+export const MEMORY_SENTINEL_SESSION_ID = "__mem__"
+
+/** What kind of document an index entry represents. Optional on the
+ *  stored entry (absent = "obs") so existing serialized indexes stay
+ *  backward-compatible without a format bump. */
+export type DocumentKind = "obs" | "mem"
 
 interface IndexEntry {
   obsId: string;
   sessionId: string;
   termCount: number;
+  /** Omitted for backward-compat on serialized indexes built before
+   *  memories were indexable. Treat absence as "obs". */
+  kind?: DocumentKind;
 }
 
 export class SearchIndex {
@@ -19,37 +36,94 @@ export class SearchIndex {
   private readonly b = 0.75;
 
   add(obs: CompressedObservation): void {
-    const terms = this.extractTerms(obs);
-    const termFreq = new Map<string, number>();
-    let termCount = 0;
+    this.addDocument(obs.id, obs.sessionId, "obs", this.extractTerms(obs));
+  }
 
-    for (const term of terms) {
-      termFreq.set(term, (termFreq.get(term) || 0) + 1);
-      termCount++;
+  /**
+   * Index a Memory document for retrieval. Memories get a sentinel
+   * sessionId so hydration callers know to fetch from KV.memories
+   * instead of the per-session observations scope.
+   *
+   * The extracted terms mirror what a CompressedObservation would
+   * contribute: title, narrative/content, concepts, files, and the
+   * memory's type tag. Memories have no `facts` or `subtitle`, so
+   * those slots are empty.
+   */
+  addMemory(memory: Memory): void {
+    this.addDocument(
+      memory.id,
+      MEMORY_SENTINEL_SESSION_ID,
+      "mem",
+      this.extractMemoryTerms(memory),
+    );
+  }
+
+  /** Remove a document from the index. Safe to call for unknown IDs
+   *  (no-op). Used on memory delete and on supersede (when an older
+   *  memory version should no longer surface in search). */
+  remove(id: string): void {
+    const entry = this.entries.get(id)
+    if (!entry) return
+    const termFreq = this.docTermCounts.get(id)
+    if (termFreq) {
+      for (const term of termFreq.keys()) {
+        const bucket = this.invertedIndex.get(term)
+        if (bucket) {
+          bucket.delete(id)
+          if (bucket.size === 0) this.invertedIndex.delete(term)
+        }
+      }
+    }
+    this.entries.delete(id)
+    this.docTermCounts.delete(id)
+    this.totalDocLength -= entry.termCount
+    if (this.totalDocLength < 0) this.totalDocLength = 0
+    this.sortedTerms = null
+  }
+
+  /** Private: shared body of add() and addMemory(). */
+  private addDocument(
+    id: string,
+    sessionId: string,
+    kind: DocumentKind,
+    terms: string[],
+  ): void {
+    // If this ID is already indexed, remove its old entry so we don't
+    // double-count (e.g., re-indexing a memory after supersede).
+    if (this.entries.has(id)) {
+      this.remove(id)
     }
 
-    this.entries.set(obs.id, {
-      obsId: obs.id,
-      sessionId: obs.sessionId,
+    const termFreq = new Map<string, number>()
+    let termCount = 0
+    for (const term of terms) {
+      termFreq.set(term, (termFreq.get(term) || 0) + 1)
+      termCount++
+    }
+
+    this.entries.set(id, {
+      obsId: id,
+      sessionId,
       termCount,
-    });
-    this.docTermCounts.set(obs.id, termFreq);
-    this.totalDocLength += termCount;
+      kind,
+    })
+    this.docTermCounts.set(id, termFreq)
+    this.totalDocLength += termCount
 
     for (const term of termFreq.keys()) {
       if (!this.invertedIndex.has(term)) {
-        this.invertedIndex.set(term, new Set());
+        this.invertedIndex.set(term, new Set())
       }
-      this.invertedIndex.get(term)!.add(obs.id);
+      this.invertedIndex.get(term)!.add(id)
     }
 
-    this.sortedTerms = null;
+    this.sortedTerms = null
   }
 
   search(
     query: string,
     limit = 20,
-  ): Array<{ obsId: string; sessionId: string; score: number }> {
+  ): Array<{ obsId: string; sessionId: string; score: number; kind: DocumentKind }> {
     const rawTerms = this.tokenize(query.toLowerCase());
     if (rawTerms.length === 0) return [];
 
@@ -125,7 +199,12 @@ export class SearchIndex {
     return Array.from(scores.entries())
       .map(([obsId, score]) => {
         const entry = this.entries.get(obsId)!;
-        return { obsId, sessionId: entry.sessionId, score };
+        return {
+          obsId,
+          sessionId: entry.sessionId,
+          score,
+          kind: entry.kind ?? ("obs" as DocumentKind),
+        };
       })
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
@@ -213,6 +292,17 @@ export class SearchIndex {
       ...obs.concepts,
       ...obs.files,
       obs.type,
+    ];
+    return this.tokenize(parts.join(" ").toLowerCase());
+  }
+
+  private extractMemoryTerms(mem: Memory): string[] {
+    const parts = [
+      mem.title,
+      mem.content,
+      ...(mem.concepts ?? []),
+      ...(mem.files ?? []),
+      mem.type,
     ];
     return this.tokenize(parts.join(" ").toLowerCase());
   }
