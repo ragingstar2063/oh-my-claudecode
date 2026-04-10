@@ -6,6 +6,7 @@ export { COMMENT_CHECKER_HOOK_SCRIPT, getCommentCheckerHookConfig } from "./comm
 export { RULES_INJECTOR_HOOK_SCRIPT, getRulesInjectorHookConfig } from "./rules-injector.js"
 export { WRITE_GUARD_HOOK_SCRIPT, getWriteGuardHookConfig } from "./write-guard.js"
 export { CTHULHU_AUTO_HOOK_SCRIPT, getCthulhuAutoHookConfig } from "./cthulhu-auto.js"
+export { MEMORY_OVERRIDE_HOOK_SCRIPT, getMemoryOverrideHookConfig } from "./memory-override.js"
 
 export interface HookDefinition {
   name: HookName
@@ -39,6 +40,10 @@ import {
   CTHULHU_AUTO_HOOK_SCRIPT,
   getCthulhuAutoHookConfig,
 } from "./cthulhu-auto.js"
+import {
+  MEMORY_OVERRIDE_HOOK_SCRIPT,
+  getMemoryOverrideHookConfig,
+} from "./memory-override.js"
 
 /** All hook definitions for the plugin */
 export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
@@ -83,6 +88,13 @@ export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
     scriptPath: "~/.claude/hooks/cthulhu-auto.sh",
     scriptContent: CTHULHU_AUTO_HOOK_SCRIPT,
     config: getCthulhuAutoHookConfig(),
+  },
+  {
+    name: "memory-override",
+    event: "SessionStart",
+    scriptPath: "~/.claude/hooks/memory-override.sh",
+    scriptContent: MEMORY_OVERRIDE_HOOK_SCRIPT,
+    config: getMemoryOverrideHookConfig(),
   },
 ]
 

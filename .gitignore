@@ -5,3 +5,8 @@ dist/
 .DS_Store
 *.bak.*
 .env
+
+# OMC working artifacts — AI/tooling scratch, never committed
+.elder-gods/plans/
+.elder-gods/blocks/
+.elder-gods/cache/

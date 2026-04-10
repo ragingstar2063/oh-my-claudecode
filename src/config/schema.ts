@@ -120,6 +120,7 @@ export const HookNameSchema = z.enum([
   "keyword-detector",         // Detect keywords → trigger agents
   "rules-injector",           // Inject .elder-gods/rules/*.md
   "cthulhu-auto",             // Auto-activate Cthulhu when .elder-gods/ is present
+  "memory-override",          // Redirect persistent memory to Yith Archive
 ])
 
 export type HookName = z.infer<typeof HookNameSchema>

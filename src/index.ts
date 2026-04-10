@@ -67,3 +67,26 @@ export {
 } from "./agents/index.js"
 
 export { MODELS, resolveModel, resolveAgentModel } from "./shared/model-resolution.js"
+
+// Block Summarizer — in-session context trimming via delegation-as-block
+export { summarizeBlock } from "./features/block-summarizer/index.js"
+export type {
+  SummarizeBlockOptions,
+  BlockSummary,
+} from "./features/block-summarizer/index.js"
+
+// Yith Archive — persistent cross-session memory subsystem
+export {
+  createYithArchive,
+  YithKV,
+  VERSION as YITH_ARCHIVE_VERSION,
+} from "./features/yith-archive/index.js"
+export type {
+  YithArchiveOptions,
+  YithArchiveHandle,
+  RememberArgs,
+  SearchArgs,
+  ContextArgs,
+  ObserveArgs,
+  FakeSdk as YithFakeSdk,
+} from "./features/yith-archive/index.js"

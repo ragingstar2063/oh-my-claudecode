@@ -38,8 +38,13 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "commander": "^12.0.0",
+    "dotenv": "^16.4.7",
     "zod": "^3.24.0"
+  },
+  "optionalDependencies": {
+    "@xenova/transformers": "^2.17.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
