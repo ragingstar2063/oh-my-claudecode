@@ -3,6 +3,7 @@ import { logger } from "../state/logger.js"
 import type { Memory, CompressedObservation, Session } from "../types.js";
 import { KV, jaccardSimilarity } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
+import { putMemory, deleteMemory } from "./search.js";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const CONTRADICTION_THRESHOLD = 0.9;
@@ -45,7 +46,7 @@ export function registerAutoForgetFunction(sdk: FakeSdk, kv: StateKV): void {
             result.ttlExpired.push(mem.id);
             deletedIds.add(mem.id);
             if (!dryRun) {
-              await kv.delete(KV.memories, mem.id);
+              await deleteMemory(kv, mem.id);
             }
           }
         }
@@ -121,7 +122,7 @@ export function registerAutoForgetFunction(sdk: FakeSdk, kv: StateKV): void {
                     ? memA
                     : memB;
                 older.isLatest = false;
-                await kv.set(KV.memories, older.id, older);
+                await putMemory(kv, older);
               }
             }
           }

@@ -8,6 +8,7 @@ import type {
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import { deleteMemory } from "./search.js";
 
 const DEFAULT_DECAY: DecayConfig = {
   lambda: 0.01,
@@ -214,7 +215,7 @@ export function registerRetentionFunctions(
       let evicted = 0;
       for (const candidate of candidates) {
         try {
-          await kv.delete(KV.memories, candidate.memoryId);
+          await deleteMemory(kv, candidate.memoryId);
           await kv.delete(KV.retentionScores, candidate.memoryId);
           evicted++;
         } catch {

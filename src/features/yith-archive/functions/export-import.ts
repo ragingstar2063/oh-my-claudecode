@@ -27,6 +27,7 @@ import type {
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { VERSION } from "../version.js";
+import { putMemory, getSearchIndex, rebuildIndex } from "./search.js";
 
 export function registerExportImportFunction(sdk: FakeSdk, kv: StateKV): void {
   sdk.registerFunction(
@@ -269,6 +270,10 @@ export function registerExportImportFunction(sdk: FakeSdk, kv: StateKV): void {
         for (const m of existingMem) {
           await kv.delete(KV.memories, m.id);
         }
+        // Bulk wipe — clear the index in one shot and let the re-imports
+        // below repopulate it via putMemory() rather than doing N-many
+        // index removes sequentially.
+        getSearchIndex().clear();
         const existingSummaries = await kv.list<SessionSummary>(KV.summaries);
         for (const s of existingSummaries) {
           await kv.delete(KV.summaries, s.sessionId);
@@ -360,7 +365,7 @@ export function registerExportImportFunction(sdk: FakeSdk, kv: StateKV): void {
             continue;
           }
         }
-        await kv.set(KV.memories, memory.id, memory);
+        await putMemory(kv, memory);
         stats.memories++;
       }
 
@@ -513,6 +518,19 @@ export function registerExportImportFunction(sdk: FakeSdk, kv: StateKV): void {
           }
           await kv.set(KV.insights, insight.id, insight);
         }
+      }
+
+      // After a bulk import, rebuild the search index so imported
+      // observations (which were written via raw kv.set above, not
+      // through compress.ts's index-add path) land in BM25. putMemory()
+      // handled memories inline, but observations need a rebuild.
+      try {
+        const rebuiltCount = await rebuildIndex(kv);
+        logger.info("Import: search index rebuilt", { entries: rebuiltCount });
+      } catch (err) {
+        logger.warn("Import: rebuildIndex failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
 
       logger.info("Import complete", { strategy, ...stats });

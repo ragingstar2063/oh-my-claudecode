@@ -8,6 +8,7 @@ import type {
 } from "../types.js";
 import { KV } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
+import { deleteMemory } from "./search.js";
 
 interface EvictionConfig {
   staleSessionDays: number;
@@ -135,7 +136,7 @@ export function registerEvictFunction(sdk: FakeSdk, kv: StateKV): void {
             stats.expiredMemories++;
             evictedMemIds.add(mem.id);
             if (!dryRun) {
-              await kv.delete(KV.memories, mem.id).catch(() => {});
+              await deleteMemory(kv, mem.id).catch(() => {});
             }
           }
         }
@@ -149,7 +150,7 @@ export function registerEvictFunction(sdk: FakeSdk, kv: StateKV): void {
           if (age > cfg.lowImportanceMaxDays * MS_PER_DAY) {
             stats.nonLatestMemories++;
             if (!dryRun) {
-              await kv.delete(KV.memories, mem.id).catch(() => {});
+              await deleteMemory(kv, mem.id).catch(() => {});
             }
           }
         }

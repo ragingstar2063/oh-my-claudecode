@@ -9,6 +9,7 @@ import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
 import { recordAudit } from "./audit.js";
 import { VERSION } from "../version.js";
+import { rebuildIndex } from "./search.js";
 
 const COMMIT_HASH_RE = /^[0-9a-f]{7,40}$/i;
 
@@ -202,6 +203,19 @@ export function registerSnapshotFunction(
           memories: state.memories?.length || 0,
           graphNodes: state.graphNodes?.length || 0,
         });
+
+        // Snapshot restore is a full state rollback — rebuild the
+        // search index from scratch so it reflects the restored KV.
+        // Can't use putMemory() per-row here because state.memories is
+        // typed as unknown (shape varies across snapshot versions).
+        try {
+          const rebuilt = await rebuildIndex(kv);
+          logger.info("Snapshot restore: search index rebuilt", { entries: rebuilt });
+        } catch (rebuildErr) {
+          logger.warn("Snapshot restore: rebuildIndex failed", {
+            error: rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr),
+          });
+        }
 
         logger.info("Snapshot restored", {
           commitHash: data.commitHash,

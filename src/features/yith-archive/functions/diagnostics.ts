@@ -2,6 +2,7 @@ import type { FakeSdk } from "../state/fake-sdk.js"
 import type { StateKV } from "../state/kv.js";
 import { KV } from "../state/schema.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
+import { putMemory } from "./search.js";
 import type {
   Action,
   ActionEdge,
@@ -763,7 +764,7 @@ export function registerDiagnosticsFunction(sdk: FakeSdk, kv: StateKV): void {
                 if (!fresh || !fresh.isLatest) return false;
                 fresh.isLatest = false;
                 fresh.updatedAt = new Date().toISOString();
-                await kv.set(KV.memories, fresh.id, fresh);
+                await putMemory(kv, fresh);
                 return true;
               },
             );

@@ -4,6 +4,7 @@ import type { Memory, CompressedObservation, ContextBlock } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { recordAudit } from "./audit.js";
+import { putMemory } from "./search.js";
 
 const CORE_SCOPE = "mem:core-memory";
 
@@ -248,7 +249,7 @@ export function registerWorkingMemoryFunctions(
           version: 1,
           isLatest: true,
         };
-        await kv.set(KV.memories, archivalMemory.id, archivalMemory);
+        await putMemory(kv, archivalMemory);
         await kv.delete(CORE_SCOPE, entry.id);
 
         totalTokens -= tokens;

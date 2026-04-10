@@ -4,6 +4,7 @@ import type { Memory, MemoryRelation } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
+import { putMemory } from "./search.js";
 
 function computeConfidence(
   source: Memory,
@@ -78,13 +79,13 @@ export function registerRelationsFunction(sdk: FakeSdk, kv: StateKV): void {
           if (!source.relatedIds) source.relatedIds = [];
           if (!source.relatedIds.includes(data.targetId)) {
             source.relatedIds.push(data.targetId);
-            await kv.set(KV.memories, data.sourceId, source);
+            await putMemory(kv, source);
           }
 
           if (!target.relatedIds) target.relatedIds = [];
           if (!target.relatedIds.includes(data.sourceId)) {
             target.relatedIds.push(data.sourceId);
-            await kv.set(KV.memories, data.targetId, target);
+            await putMemory(kv, target);
           }
 
           logger.info("Memory relation created", {
@@ -127,9 +128,9 @@ export function registerRelationsFunction(sdk: FakeSdk, kv: StateKV): void {
       };
 
       existing.isLatest = false;
-      await kv.set(KV.memories, existing.id, existing);
+      await putMemory(kv, existing);
 
-      await kv.set(KV.memories, evolved.id, evolved);
+      await putMemory(kv, evolved);
 
       const relation: MemoryRelation = {
         type: "supersedes",

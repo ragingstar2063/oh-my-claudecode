@@ -4,6 +4,7 @@ import type { Memory } from "../types.js";
 import { KV, generateId, jaccardSimilarity } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { withKeyedLock } from "../state/keyed-mutex.js";
+import { putMemory, deleteMemory } from "./search.js";
 
 export function registerRememberFunction(sdk: FakeSdk, kv: StateKV): void {
   sdk.registerFunction(
@@ -92,9 +93,11 @@ export function registerRememberFunction(sdk: FakeSdk, kv: StateKV): void {
 
         if (supersededMemory) {
           supersededMemory.isLatest = false;
-          await kv.set(KV.memories, supersededMemory.id, supersededMemory);
+          // putMemory detects isLatest=false and removes from the index
+          // so the superseded version doesn't compete with the new one.
+          await putMemory(kv, supersededMemory);
         }
-        await kv.set(KV.memories, memory.id, memory);
+        await putMemory(kv, memory);
 
         if (supersededId) {
           sdk.triggerVoid("mem::cascade-update", {
@@ -121,7 +124,7 @@ export function registerRememberFunction(sdk: FakeSdk, kv: StateKV): void {
       let deleted = 0;
 
       if (data.memoryId) {
-        await kv.delete(KV.memories, data.memoryId);
+        await deleteMemory(kv, data.memoryId);
         deleted++;
       }
 
