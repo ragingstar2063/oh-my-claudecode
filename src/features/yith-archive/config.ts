@@ -137,7 +137,13 @@ export function detectEmbeddingProvider(
   if (source["VOYAGE_API_KEY"]) return "voyage";
   if (source["COHERE_API_KEY"]) return "cohere";
   if (source["OPENROUTER_API_KEY"]) return "openrouter";
-  return null;
+
+  // Default: local CPU embeddings via @xenova/transformers. Zero config,
+  // zero API keys, private. The actual model download happens on first
+  // use (see LocalEmbeddingProvider.getExtractor), not at boot. If xenova
+  // isn't installed the LocalEmbeddingProvider will throw on first embed,
+  // and HybridSearch will fall back to BM25-only ranking.
+  return "local";
 }
 
 export function loadClaudeBridgeConfig(): ClaudeBridgeConfig {

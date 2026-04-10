@@ -12,11 +12,14 @@ export interface YithLogger {
 
 const PREFIX = "[yith]"
 
+// All diagnostic output goes to stderr. stdout is reserved for MCP JSON-RPC
+// frames when the archive is driven by yith-mcp; any stray stdout write would
+// corrupt the protocol stream. Non-MCP callers still see the logs on stderr.
 export const logger: YithLogger = {
-  info: (msg, ...rest) => console.log(PREFIX, msg, ...rest),
-  warn: (msg, ...rest) => console.warn(PREFIX, msg, ...rest),
+  info: (msg, ...rest) => console.error(PREFIX, msg, ...rest),
+  warn: (msg, ...rest) => console.error(PREFIX, msg, ...rest),
   error: (msg, ...rest) => console.error(PREFIX, msg, ...rest),
   debug: (msg, ...rest) => {
-    if (process.env["YITH_DEBUG"]) console.log(PREFIX, "[debug]", msg, ...rest)
+    if (process.env["YITH_DEBUG"]) console.error(PREFIX, "[debug]", msg, ...rest)
   },
 }

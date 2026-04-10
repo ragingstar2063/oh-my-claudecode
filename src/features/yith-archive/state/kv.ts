@@ -1,4 +1,11 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs"
 import { dirname } from "node:path"
 
 /**
@@ -27,8 +34,18 @@ export class YithKV {
           }
           this.store.set(scope, map)
         }
-      } catch {
-        // start fresh
+      } catch (err) {
+        // store.json exists but couldn't be parsed — almost certainly means
+        // a previous process was killed mid-write back when persist() wasn't
+        // atomic. Announce loudly on stderr so the user knows they lost data
+        // rather than silently starting fresh; atomic writes (below) should
+        // prevent this from ever happening again.
+        process.stderr.write(
+          `[yith] WARNING: persist file ${persistPath} could not be parsed ` +
+            `(${err instanceof Error ? err.message : String(err)}) — ` +
+            `starting with empty archive. Previous data is preserved at ` +
+            `${persistPath} — inspect manually or delete to silence this.\n`,
+        )
       }
     }
   }
@@ -52,9 +69,18 @@ export class YithKV {
     return entries ? (Array.from(entries.values()) as T[]) : []
   }
 
-  /** Persist the full store to disk synchronously. Call from shutdown or on a timer. */
+  /**
+   * Persist the full store to disk synchronously. Atomic: writes to a tmp
+   * file, then renames into place. POSIX rename(2) on the same filesystem
+   * is guaranteed atomic, so a crash mid-write leaves either the old file
+   * intact or the new file complete — never a partial write.
+   *
+   * Call from shutdown or on a timer. Safe to call concurrently with
+   * itself (last call wins; earlier tmp files get cleaned up by rename).
+   */
   persist(): void {
     if (!this.persistPath) return
+    const tmpPath = `${this.persistPath}.tmp`
     try {
       const dir = dirname(this.persistPath)
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
@@ -62,8 +88,18 @@ export class YithKV {
       for (const [scope, entries] of this.store) {
         data[scope] = Object.fromEntries(entries)
       }
-      writeFileSync(this.persistPath, JSON.stringify(data), "utf-8")
+      writeFileSync(tmpPath, JSON.stringify(data), "utf-8")
+      renameSync(tmpPath, this.persistPath)
     } catch (err) {
+      // Best-effort cleanup of the tmp file if the write succeeded but the
+      // rename failed; avoids leaving orphaned .tmp files around the data dir.
+      if (existsSync(tmpPath)) {
+        try {
+          unlinkSync(tmpPath)
+        } catch {
+          /* swallow — the tmp file isn't critical */
+        }
+      }
       process.stderr.write(
         `[yith] Persist failed: ${err instanceof Error ? err.message : String(err)}\n`,
       )
