@@ -1,6 +1,6 @@
 {
   "name": "oh-my-claudecode",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Cthulhu-themed agentic harness for Claude Code — 11 Elder God agents, lifecycle hooks, skill system, and multi-tier orchestration.",
   "type": "module",
   "main": "./dist/index.js",
