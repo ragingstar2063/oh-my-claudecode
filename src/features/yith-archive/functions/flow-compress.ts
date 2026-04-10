@@ -2,6 +2,12 @@ import type { FakeSdk } from "../state/fake-sdk.js"
 import type { StateKV } from "../state/kv.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Action, ActionEdge, RoutineRun, MemoryProvider } from "../types.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
+import { putMemory } from "./search.js";
 
 const FLOW_COMPRESS_SYSTEM = `You are a workflow summarizer. Given a completed action chain, produce a concise summary capturing:
 1. The overall goal and outcome
@@ -102,7 +108,7 @@ export function registerFlowCompressFunction(
           },
         };
 
-        await kv.set(KV.memories, memory.id, memory);
+        await putMemory(kv, memory);
 
         return {
           success: true,
@@ -196,6 +202,167 @@ function extractConcepts(actions: Action[]): string[] {
     }
   }
   return Array.from(concepts);
+}
+
+interface FlowCompressArgs {
+  runId?: string
+  actionIds?: string[]
+  project?: string
+}
+
+interface FlowCompressStepState {
+  originalArgs: FlowCompressArgs
+  doneActions: Action[]
+  packetId: string
+}
+
+/** Work-packet variant of mem::flow-compress. Single-call 2-state machine. */
+export function registerFlowCompressStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction(
+    { id: "mem::flow-compress-step" },
+    async (
+      input: StepInput<FlowCompressArgs, FlowCompressStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        let actionsToCompress: Action[] = []
+
+        if (originalArgs.runId) {
+          const run = await kv.get<RoutineRun>(KV.routineRuns, originalArgs.runId)
+          if (!run) {
+            return { done: true, result: { success: false, error: "run not found" } }
+          }
+          for (const id of run.actionIds) {
+            const action = await kv.get<Action>(KV.actions, id)
+            if (action) actionsToCompress.push(action)
+          }
+        } else if (originalArgs.actionIds && originalArgs.actionIds.length > 0) {
+          for (const id of originalArgs.actionIds) {
+            const action = await kv.get<Action>(KV.actions, id)
+            if (action) actionsToCompress.push(action)
+          }
+        } else if (originalArgs.project) {
+          const allActions = await kv.list<Action>(KV.actions)
+          actionsToCompress = allActions.filter(
+            (a) => a.project === originalArgs.project && a.status === "done",
+          )
+        } else {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: "runId, actionIds, or project is required",
+            },
+          }
+        }
+
+        const doneActions = actionsToCompress.filter((a) => a.status === "done")
+        if (doneActions.length === 0) {
+          return {
+            done: true,
+            result: {
+              success: true,
+              message: "No completed actions to compress",
+              compressed: 0,
+            },
+          }
+        }
+
+        const allEdges = await kv.list<ActionEdge>(KV.actionEdges)
+        const relevantIds = new Set(doneActions.map((a) => a.id))
+        const relevantEdges = allEdges.filter(
+          (e) =>
+            relevantIds.has(e.sourceActionId) ||
+            relevantIds.has(e.targetActionId),
+        )
+
+        const prompt = buildFlowPrompt(doneActions, relevantEdges)
+        const packet = createWorkPacket({
+          kind: "summarize",
+          systemPrompt: FLOW_COMPRESS_SYSTEM,
+          userPrompt: prompt,
+          purpose: `flow-compress ${doneActions.length} completed actions`,
+        })
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: {
+            originalArgs,
+            doneActions,
+            packetId: packet.id,
+          },
+          workPackets: [packet],
+          instructions:
+            "Run the flow-compress prompt through your LLM and commit the " +
+            "XML summary. Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `no completion for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const summary = parseFlowSummary(response)
+        const { doneActions } = intermediateState
+
+        const memory = {
+          id: generateId("mem"),
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          type: "workflow" as const,
+          title: summary.goal || `Workflow: ${doneActions.length} actions`,
+          content: formatSummary(summary),
+          concepts: extractConcepts(doneActions),
+          files: extractFiles(doneActions),
+          sessionIds: [],
+          strength: 1.0,
+          version: 1,
+          isLatest: true,
+          metadata: {
+            flowCompressed: true,
+            actionCount: doneActions.length,
+            actionIds: doneActions.map((a) => a.id),
+          },
+        }
+
+        await putMemory(kv, memory)
+
+        return {
+          done: true,
+          result: {
+            success: true,
+            compressed: doneActions.length,
+            memoryId: memory.id,
+            summary,
+          },
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }
 
 function extractFiles(actions: Action[]): string[] {

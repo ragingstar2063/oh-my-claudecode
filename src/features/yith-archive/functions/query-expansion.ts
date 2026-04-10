@@ -1,6 +1,11 @@
 import type { FakeSdk } from "../state/fake-sdk.js"
 import { logger } from "../state/logger.js"
 import type { MemoryProvider, QueryExpansion } from "../types.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 const QUERY_EXPANSION_SYSTEM = `You are a query expansion engine for a memory retrieval system. Given a user query, generate diverse reformulations to maximize recall.
 
@@ -124,6 +129,104 @@ export function registerQueryExpansionFunction(
       }
     },
   );
+}
+
+interface ExpandQueryArgs {
+  query: string
+  maxReformulations?: number
+}
+
+interface ExpandQueryStepState {
+  originalArgs: ExpandQueryArgs
+  packetId: string
+}
+
+/** Work-packet variant of mem::expand-query. Single-call 2-state machine. */
+export function registerQueryExpansionStepFunction(sdk: FakeSdk): void {
+  sdk.registerFunction(
+    { id: "mem::expand-query-step" },
+    async (
+      input: StepInput<ExpandQueryArgs, ExpandQueryStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        const packet = createWorkPacket({
+          kind: "compress",
+          systemPrompt: QUERY_EXPANSION_SYSTEM,
+          userPrompt: `Expand this query for memory retrieval:\n\n"${originalArgs.query}"`,
+          purpose: `expand query: ${originalArgs.query.slice(0, 60)}`,
+        })
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: { originalArgs, packetId: packet.id },
+          workPackets: [packet],
+          instructions:
+            "Run the query-expansion prompt through your LLM and commit " +
+            "the XML. Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          // Mirror the direct path's soft-failure shape: return a
+          // success-empty expansion rather than an error, so callers
+          // that wrap this in hybrid search can still proceed.
+          return {
+            done: true,
+            result: {
+              success: true,
+              expansion: {
+                original: intermediateState.originalArgs.query,
+                reformulations: [],
+                temporalConcretizations: [],
+                entityExtractions: [],
+              },
+            },
+          }
+        }
+
+        const parsed = parseExpansionXml(response)
+        if (!parsed) {
+          logger.warn("Failed to parse query expansion (step)")
+          return {
+            done: true,
+            result: {
+              success: true,
+              expansion: {
+                original: intermediateState.originalArgs.query,
+                reformulations: [],
+                temporalConcretizations: [],
+                entityExtractions: [],
+              },
+            },
+          }
+        }
+        parsed.original = intermediateState.originalArgs.query
+        parsed.reformulations = parsed.reformulations.slice(
+          0,
+          intermediateState.originalArgs.maxReformulations ?? 5,
+        )
+        return {
+          done: true,
+          result: { success: true, expansion: parsed },
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }
 
 export function extractEntitiesFromQuery(query: string): string[] {

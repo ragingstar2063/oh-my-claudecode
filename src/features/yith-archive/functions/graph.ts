@@ -14,6 +14,11 @@ import {
   buildGraphExtractionPrompt,
 } from "../prompts/graph-extraction.js";
 import { recordAudit } from "./audit.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 function parseGraphXml(
   xml: string,
@@ -271,4 +276,147 @@ export function registerGraphFunction(
       edgesByType,
     };
   });
+}
+
+interface GraphExtractArgs {
+  observations: CompressedObservation[]
+}
+
+interface GraphExtractStepState {
+  obsIds: string[]
+  packetId: string
+}
+
+/** Work-packet variant of mem::graph-extract. Single-call 2-state machine. */
+export function registerGraphStepFunction(sdk: FakeSdk, kv: StateKV): void {
+  sdk.registerFunction(
+    { id: "mem::graph-extract-step" },
+    async (
+      input: StepInput<GraphExtractArgs, GraphExtractStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        if (!originalArgs.observations || originalArgs.observations.length === 0) {
+          return {
+            done: true,
+            result: { success: false, error: "No observations provided" },
+          }
+        }
+        const prompt = buildGraphExtractionPrompt(
+          originalArgs.observations.map((o) => ({
+            title: o.title,
+            narrative: o.narrative,
+            concepts: o.concepts,
+            files: o.files,
+            type: o.type,
+          })),
+        )
+        const packet = createWorkPacket({
+          kind: "compress",
+          systemPrompt: GRAPH_EXTRACTION_SYSTEM,
+          userPrompt: prompt,
+          purpose: `extract graph from ${originalArgs.observations.length} observations`,
+        })
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: {
+            obsIds: originalArgs.observations.map((o) => o.id),
+            packetId: packet.id,
+          },
+          workPackets: [packet],
+          instructions:
+            "Run the graph-extraction prompt through your LLM and commit " +
+            "the XML. Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `no completion for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const obsIds = intermediateState.obsIds
+        const { nodes, edges } = parseGraphXml(response, obsIds)
+
+        const existingNodes = await kv.list<GraphNode>(KV.graphNodes)
+        const existingEdges = await kv.list<GraphEdge>(KV.graphEdges)
+
+        for (const node of nodes) {
+          const existing = existingNodes.find(
+            (n) => n.name === node.name && n.type === node.type,
+          )
+          if (existing) {
+            const merged = {
+              ...existing,
+              sourceObservationIds: [
+                ...new Set([...existing.sourceObservationIds, ...obsIds]),
+              ],
+              properties: { ...existing.properties, ...node.properties },
+            }
+            await kv.set(KV.graphNodes, existing.id, merged)
+            const idx = existingNodes.findIndex((n) => n.id === existing.id)
+            if (idx !== -1) existingNodes[idx] = merged
+          } else {
+            await kv.set(KV.graphNodes, node.id, node)
+            existingNodes.push(node)
+          }
+        }
+
+        for (const edge of edges) {
+          const edgeKey = `${edge.sourceNodeId}|${edge.targetNodeId}|${edge.type}`
+          const existingEdge = existingEdges.find(
+            (e) => `${e.sourceNodeId}|${e.targetNodeId}|${e.type}` === edgeKey,
+          )
+          if (existingEdge) {
+            existingEdge.sourceObservationIds = [
+              ...new Set([...existingEdge.sourceObservationIds, ...obsIds]),
+            ]
+            await kv.set(KV.graphEdges, existingEdge.id, existingEdge)
+          } else {
+            await kv.set(KV.graphEdges, edge.id, edge)
+            existingEdges.push(edge)
+          }
+        }
+
+        await recordAudit(kv, "observe", "mem::graph-extract-step", obsIds, {
+          nodesExtracted: nodes.length,
+          edgesExtracted: edges.length,
+        })
+
+        logger.info("Graph extraction complete (step)", {
+          nodes: nodes.length,
+          edges: edges.length,
+        })
+        return {
+          done: true,
+          result: {
+            success: true,
+            nodesAdded: nodes.length,
+            edgesAdded: edges.length,
+          },
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }

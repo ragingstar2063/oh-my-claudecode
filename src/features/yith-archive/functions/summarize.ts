@@ -14,6 +14,11 @@ import { SummaryOutputSchema } from "../eval/schemas.js";
 import { validateOutput } from "../eval/validator.js";
 import { scoreSummary } from "../eval/quality.js";
 import type { MetricsStore } from "../eval/metrics-store.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 function parseSummaryXml(
   xml: string,
@@ -151,4 +156,166 @@ export function registerSummarizeFunction(
       }
     },
   );
+}
+
+interface SummarizeArgs {
+  sessionId: string
+}
+
+interface SummarizeStepState {
+  originalArgs: SummarizeArgs
+  project: string
+  compressedCount: number
+  packetId: string
+  startMs: number
+}
+
+/** Work-packet variant of mem::summarize. Single-call 2-state machine. */
+export function registerSummarizeStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+  metricsStore?: MetricsStore,
+): void {
+  sdk.registerFunction(
+    { id: "mem::summarize-step" },
+    async (
+      input: StepInput<SummarizeArgs, SummarizeStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        const session = await kv.get<Session>(KV.sessions, originalArgs.sessionId)
+        if (!session) {
+          return {
+            done: true,
+            result: { success: false, error: "session_not_found" },
+          }
+        }
+        const observations = await kv.list<CompressedObservation>(
+          KV.observations(originalArgs.sessionId),
+        )
+        const compressed = observations.filter((o) => o.title)
+        if (compressed.length === 0) {
+          return {
+            done: true,
+            result: { success: false, error: "no_observations" },
+          }
+        }
+
+        const prompt = buildSummaryPrompt(compressed)
+        const packet = createWorkPacket({
+          kind: "summarize",
+          systemPrompt: SUMMARY_SYSTEM,
+          userPrompt: prompt,
+          purpose: `summarize session ${originalArgs.sessionId} (${compressed.length} observations)`,
+        })
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: {
+            originalArgs,
+            project: session.project,
+            compressedCount: compressed.length,
+            packetId: packet.id,
+            startMs: Date.now(),
+          },
+          workPackets: [packet],
+          instructions:
+            "Run the summarize prompt through your LLM and commit the XML " +
+            "result. Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `no completion for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const summary = parseSummaryXml(
+          response,
+          intermediateState.originalArgs.sessionId,
+          intermediateState.project,
+          intermediateState.compressedCount,
+        )
+        const latencyMs = Date.now() - intermediateState.startMs
+
+        if (!summary) {
+          if (metricsStore) {
+            await metricsStore.record("mem::summarize", latencyMs, false)
+          }
+          return {
+            done: true,
+            result: { success: false, error: "parse_failed" },
+          }
+        }
+
+        const summaryForValidation = {
+          title: summary.title,
+          narrative: summary.narrative,
+          keyDecisions: summary.keyDecisions,
+          filesModified: summary.filesModified,
+          concepts: summary.concepts,
+        }
+        const validation = validateOutput(
+          SummaryOutputSchema,
+          summaryForValidation,
+          "mem::summarize",
+        )
+        if (!validation.valid) {
+          if (metricsStore) {
+            await metricsStore.record("mem::summarize", latencyMs, false)
+          }
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: "validation_failed",
+              errors: validation.result.errors,
+            },
+          }
+        }
+
+        const qualityScore = scoreSummary(summaryForValidation)
+        await kv.set(KV.summaries, intermediateState.originalArgs.sessionId, summary)
+
+        if (metricsStore) {
+          await metricsStore.record(
+            "mem::summarize",
+            latencyMs,
+            true,
+            qualityScore,
+          )
+        }
+        logger.info("Session summarized (step)", {
+          sessionId: intermediateState.originalArgs.sessionId,
+          title: summary.title,
+          qualityScore,
+        })
+
+        return {
+          done: true,
+          result: { success: true, summary, qualityScore },
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }

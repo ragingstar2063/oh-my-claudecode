@@ -7,6 +7,13 @@ import type {
 } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import {
+  createWorkPacket,
+  planLoopBatches,
+  type StepInput,
+  type StepResult,
+  type WorkPacket,
+} from "../state/work-packets.js";
 
 const SLIDING_WINDOW_SYSTEM = `You are a contextual enrichment engine. Given a primary observation and its surrounding context window (previous and next observations from the same session), produce an enriched version.
 
@@ -252,4 +259,452 @@ export function registerSlidingWindowFunction(
       return { success: true, total: toEnrich.length, enriched, failed };
     },
   );
+}
+
+export interface EnrichWindowArgs {
+  observationId: string
+  sessionId: string
+  lookback?: number
+  lookahead?: number
+}
+
+export interface EnrichWindowStepState {
+  originalArgs: EnrichWindowArgs
+  windowStart: number
+  windowEnd: number
+  packetId: string
+}
+
+/** Work-packet variant of mem::enrich-window. Single-call 2-state machine. */
+export function registerSlidingWindowStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction(
+    { id: "mem::enrich-window-step" },
+    async (
+      input: StepInput<EnrichWindowArgs, EnrichWindowStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        const hprev = originalArgs.lookback ?? 3
+        const hnext = originalArgs.lookahead ?? 2
+
+        const allObs = await kv.list<CompressedObservation>(
+          KV.observations(originalArgs.sessionId),
+        )
+        allObs.sort(
+          (a, b) =>
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
+        )
+
+        const primaryIdx = allObs.findIndex(
+          (o) => o.id === originalArgs.observationId,
+        )
+        if (primaryIdx === -1) {
+          return {
+            done: true,
+            result: { success: false, error: "Observation not found" },
+          }
+        }
+
+        const primary = allObs[primaryIdx]
+        const before = allObs.slice(Math.max(0, primaryIdx - hprev), primaryIdx)
+        const after = allObs.slice(primaryIdx + 1, primaryIdx + 1 + hnext)
+
+        if (before.length === 0 && after.length === 0) {
+          return {
+            done: true,
+            result: {
+              success: true,
+              enriched: null,
+              reason: "No adjacent context available",
+            },
+          }
+        }
+
+        const prompt = buildWindowPrompt(primary, before, after)
+        const packet = createWorkPacket({
+          kind: "compress",
+          systemPrompt: SLIDING_WINDOW_SYSTEM,
+          userPrompt: prompt,
+          purpose: `enrich observation ${originalArgs.observationId} with context window`,
+        })
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: {
+            originalArgs,
+            windowStart: Math.max(0, primaryIdx - hprev),
+            windowEnd: Math.min(allObs.length - 1, primaryIdx + hnext),
+            packetId: packet.id,
+          },
+          workPackets: [packet],
+          instructions:
+            "Run the enrichment prompt through your LLM and commit the " +
+            "XML. Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `no completion for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const parsed = parseEnrichedXml(response)
+        if (!parsed) {
+          logger.warn("Failed to parse enrichment XML (step)", {
+            obsId: intermediateState.originalArgs.observationId,
+          })
+          return {
+            done: true,
+            result: { success: false, error: "parse_failed" },
+          }
+        }
+
+        const { observationId, sessionId } = intermediateState.originalArgs
+        const enriched: EnrichedChunk = {
+          id: generateId("ec"),
+          originalObsId: observationId,
+          sessionId,
+          content: parsed.content,
+          resolvedEntities: parsed.resolvedEntities,
+          preferences: parsed.preferences,
+          contextBridges: parsed.contextBridges,
+          windowStart: intermediateState.windowStart,
+          windowEnd: intermediateState.windowEnd,
+          createdAt: new Date().toISOString(),
+        }
+
+        await kv.set(
+          KV.enrichedChunks(sessionId),
+          observationId,
+          enriched,
+        )
+
+        return { done: true, result: { success: true, enriched } }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
+}
+
+interface EnrichSessionArgs {
+  sessionId: string
+  lookback?: number
+  lookahead?: number
+  minImportance?: number
+}
+
+/**
+ * Intermediate state for enrich-session-step. Deliberately small:
+ * we store observation IDs (short strings) plus the sub-states for
+ * the CURRENT batch only, keyed by packet ID for commit-time lookup.
+ *
+ * Previously this carried full `WorkPacket` records (systemPrompt +
+ * userPrompt, KBs each), which got serialized into store.json on
+ * every round and bloated persistence. Fresh packets are now built
+ * lazily per batch by re-dispatching enrich-window-step(step:0),
+ * which is cheap because YithKV is in-memory.
+ */
+interface EnrichSessionStepState {
+  originalArgs: EnrichSessionArgs
+  /** Observation IDs still awaiting enrichment, in order. */
+  pendingIds: string[]
+  /** Sub-states for the batch currently out with the caller. Keyed
+   *  by packet ID so step 1 can match completions back to the right
+   *  sub-step. Cleared at the start of each new batch. */
+  currentBatch: Record<string, EnrichWindowStepState>
+  batchSize: number
+  totalCount: number
+  /** Count of observations where an EnrichedChunk was actually written. */
+  enriched: number
+  /** Count of observations that succeeded at the sub-step level but
+   *  had no work to do (no adjacent context window). Tracked separately
+   *  so callers can distinguish "I enriched 10 obs" from "I scanned 10
+   *  obs and none needed enrichment." */
+  skipped: number
+  failed: number
+  /** 1-based batch counter for user-facing progress strings only. */
+  batchNum: number
+}
+
+/**
+ * Build and emit the next batch of enrichment packets. Dispatches
+ * enrich-window-step(step:0) for each observation dequeued from
+ * `pendingIds` until `batchSize` real packets are collected or the
+ * queue runs out. Sub-steps that short-circuit (no adjacent context,
+ * obs not found) are counted toward enriched/failed directly and
+ * don't consume a packet slot.
+ *
+ * Mutates state in place: appends to currentBatch, drains pendingIds,
+ * bumps enriched/failed counters.
+ *
+ * Returns the WorkPacket array for the batch. Empty array means
+ * the queue is drained AND all remaining sub-steps short-circuited —
+ * the caller should return terminal.
+ */
+async function buildEnrichBatch(
+  sdk: FakeSdk,
+  state: EnrichSessionStepState,
+): Promise<WorkPacket[]> {
+  const packets: WorkPacket[] = []
+  state.currentBatch = {}
+
+  while (packets.length < state.batchSize && state.pendingIds.length > 0) {
+    const observationId = state.pendingIds.shift()!
+    try {
+      const subResult = (await sdk.trigger("mem::enrich-window-step", {
+        step: 0,
+        originalArgs: {
+          observationId,
+          sessionId: state.originalArgs.sessionId,
+          lookback: state.originalArgs.lookback ?? 3,
+          lookahead: state.originalArgs.lookahead ?? 2,
+        },
+      })) as StepResult
+
+      if (subResult.done) {
+        // Terminal at step 0 — either "no adjacent context" (success
+        // with enriched:null) or "observation not found" (failure).
+        // Neither consumes a packet slot. Count the no-context case
+        // as "skipped" rather than "enriched" so the terminal counts
+        // don't overstate how much work was actually done.
+        const r = subResult.result as {
+          success?: boolean
+          enriched?: unknown
+        }
+        if (r?.success) {
+          if (r.enriched === null || r.enriched === undefined) {
+            state.skipped++
+          } else {
+            state.enriched++
+          }
+        } else {
+          state.failed++
+        }
+        continue
+      }
+
+      const subState = subResult.intermediateState as EnrichWindowStepState
+      const packet = subResult.workPackets[0]
+      state.currentBatch[packet.id] = subState
+      packets.push(packet)
+    } catch {
+      state.failed++
+    }
+  }
+
+  return packets
+}
+
+/**
+ * Work-packet variant of mem::enrich-session. Nested loop: drains a
+ * queue of observation IDs in batches, fanning out to
+ * mem::enrich-window-step(step:0) to build each batch's packets on
+ * demand, and re-entering it at step 1 with each completion when the
+ * batch commits. No packet bodies are persisted between rounds.
+ */
+export function registerEnrichSessionStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction(
+    { id: "mem::enrich-session-step" },
+    async (
+      input: StepInput<EnrichSessionArgs, EnrichSessionStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        const allObs = await kv.list<CompressedObservation>(
+          KV.observations(originalArgs.sessionId),
+        )
+        const minImp = originalArgs.minImportance ?? 4
+        const toEnrich = allObs.filter((o) => o.importance >= minImp)
+
+        if (toEnrich.length === 0) {
+          return {
+            done: true,
+            result: {
+              success: true,
+              total: 0,
+              enriched: 0,
+              skipped: 0,
+              failed: 0,
+            },
+          }
+        }
+
+        // Count-based batching — ignore bytes because enrich-window
+        // prompts are bounded by window size and we want to avoid
+        // pre-dispatching every sub-step just to size them.
+        const plan = planLoopBatches(toEnrich.length, 0)
+
+        const state: EnrichSessionStepState = {
+          originalArgs,
+          pendingIds: toEnrich.map((o) => o.id),
+          currentBatch: {},
+          batchSize: plan.batchSize,
+          totalCount: toEnrich.length,
+          enriched: 0,
+          skipped: 0,
+          failed: 0,
+          batchNum: 1,
+        }
+
+        const firstBatch = await buildEnrichBatch(sdk, state)
+
+        if (firstBatch.length === 0) {
+          // Every observation short-circuited — no LLM work needed.
+          logger.info("Session enrichment complete (step, zero-packet)", {
+            sessionId: originalArgs.sessionId,
+            total: state.totalCount,
+            enriched: state.enriched,
+            failed: state.failed,
+          })
+          return {
+            done: true,
+            result: {
+              success: true,
+              total: state.totalCount,
+              enriched: state.enriched,
+              skipped: state.skipped,
+              failed: state.failed,
+            },
+          }
+        }
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: state,
+          workPackets: firstBatch,
+          instructions:
+            `Enrich-session loop — batch ${state.batchNum}. ` +
+            `Run each of these ${firstBatch.length} enrichment prompts and ` +
+            "commit all completions together.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+
+        // Consume the current batch: re-enter enrich-window-step(step:1)
+        // with each stored sub-state and its matching completion.
+        for (const [packetId, subState] of Object.entries(
+          intermediateState.currentBatch,
+        )) {
+          const completion = completions?.[packetId]
+          if (!completion) {
+            intermediateState.failed++
+            continue
+          }
+          try {
+            const subResult = (await sdk.trigger("mem::enrich-window-step", {
+              step: 1,
+              originalArgs: subState.originalArgs,
+              intermediateState: subState,
+              completions: { [packetId]: completion },
+            })) as StepResult
+
+            if (subResult.done) {
+              const r = subResult.result as { success?: boolean }
+              if (r?.success) intermediateState.enriched++
+              else intermediateState.failed++
+            } else {
+              // enrich-window-step should always terminate at step 1.
+              intermediateState.failed++
+            }
+          } catch {
+            intermediateState.failed++
+          }
+        }
+        intermediateState.currentBatch = {}
+
+        // Try to build the next batch.
+        if (intermediateState.pendingIds.length === 0) {
+          logger.info("Session enrichment complete (step)", {
+            sessionId: intermediateState.originalArgs.sessionId,
+            total: intermediateState.totalCount,
+            enriched: intermediateState.enriched,
+            failed: intermediateState.failed,
+          })
+          return {
+            done: true,
+            result: {
+              success: true,
+              total: intermediateState.totalCount,
+              enriched: intermediateState.enriched,
+              skipped: intermediateState.skipped,
+              failed: intermediateState.failed,
+            },
+          }
+        }
+
+        intermediateState.batchNum++
+        const nextPackets = await buildEnrichBatch(sdk, intermediateState)
+
+        if (nextPackets.length === 0) {
+          // Remaining queue all short-circuited — nothing more to ask
+          // the caller for; return terminal.
+          logger.info("Session enrichment complete (step, short-circuit tail)", {
+            sessionId: intermediateState.originalArgs.sessionId,
+            total: intermediateState.totalCount,
+            enriched: intermediateState.enriched,
+            failed: intermediateState.failed,
+          })
+          return {
+            done: true,
+            result: {
+              success: true,
+              total: intermediateState.totalCount,
+              enriched: intermediateState.enriched,
+              skipped: intermediateState.skipped,
+              failed: intermediateState.failed,
+            },
+          }
+        }
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState,
+          workPackets: nextPackets,
+          instructions:
+            `Enrich-session loop — batch ${intermediateState.batchNum}. ` +
+            `Run these ${nextPackets.length} enrichment prompts.`,
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }

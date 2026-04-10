@@ -10,6 +10,11 @@ import type {
 import { KV, generateId, fingerprintId } from "../state/schema.js";
 import { StateKV } from "../state/kv.js";
 import { recordAudit } from "./audit.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 const SKILL_EXTRACT_SYSTEM = `You are a skill extraction engine. Given a completed multi-step task session, extract a reusable procedural skill document.
 
@@ -300,4 +305,235 @@ export function registerSkillExtractFunctions(
       };
     },
   );
+}
+
+interface SkillExtractArgs {
+  sessionId: string
+}
+
+interface SkillExtractStepState {
+  originalArgs: SkillExtractArgs
+  summary: SessionSummary
+  sessionConcepts: string[]
+  observationIds: string[]
+  packetId: string
+}
+
+/** Work-packet variant of mem::skill-extract. Single-call 2-state machine. */
+export function registerSkillExtractStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction(
+    { id: "mem::skill-extract-step" },
+    async (
+      input: StepInput<SkillExtractArgs, SkillExtractStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        if (!originalArgs?.sessionId) {
+          return {
+            done: true,
+            result: { success: false, error: "sessionId is required" },
+          }
+        }
+
+        const session = await kv
+          .get<Session>(KV.sessions, originalArgs.sessionId)
+          .catch(() => null)
+        if (!session) {
+          return {
+            done: true,
+            result: { success: false, error: "session not found" },
+          }
+        }
+        if (session.status !== "completed") {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: "session must be completed before skill extraction",
+            },
+          }
+        }
+
+        const [summary, observations] = await Promise.all([
+          kv
+            .get<SessionSummary>(KV.summaries, originalArgs.sessionId)
+            .catch(() => null),
+          kv
+            .list<CompressedObservation>(KV.observations(originalArgs.sessionId))
+            .catch(() => []),
+        ])
+        if (!summary) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: "no summary — run mem::summarize first",
+            },
+          }
+        }
+        if (observations.length < 3) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: "too few observations for skill extraction",
+            },
+          }
+        }
+
+        const prompt = buildSkillPrompt(summary, observations)
+        const packet = createWorkPacket({
+          kind: "summarize",
+          systemPrompt: SKILL_EXTRACT_SYSTEM,
+          userPrompt: prompt,
+          purpose: `extract skill from session ${originalArgs.sessionId}`,
+        })
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: {
+            originalArgs,
+            summary,
+            sessionConcepts: summary.concepts,
+            observationIds: observations.slice(0, 10).map((o) => o.id),
+            packetId: packet.id,
+          },
+          workPackets: [packet],
+          instructions:
+            "Run the skill-extract prompt through your LLM and commit the " +
+            "XML (or <no-skill/>). Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `no completion for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const parsed = parseSkillXml(response)
+        if (!parsed) {
+          logger.info("No skill extracted — session was exploratory (step)", {
+            sessionId: intermediateState.originalArgs.sessionId,
+          })
+          return {
+            done: true,
+            result: {
+              success: true,
+              extracted: false,
+              reason: "no clear procedure found",
+            },
+          }
+        }
+
+        const fp = fingerprintId(
+          "skill",
+          JSON.stringify({
+            title: parsed.title.toLowerCase(),
+            trigger: parsed.trigger.toLowerCase(),
+            steps: parsed.steps.map((s) => s.toLowerCase().trim()),
+          }),
+        )
+        const existing = await kv
+          .get<ProceduralMemory>(KV.procedural, fp)
+          .catch(() => null)
+
+        const sessionId = intermediateState.originalArgs.sessionId
+
+        if (existing) {
+          const alreadyReinforced = existing.sourceSessionIds.includes(sessionId)
+          if (!alreadyReinforced) {
+            existing.strength = Math.min(1.0, existing.strength + 0.15)
+            existing.frequency++
+            existing.sourceSessionIds = [...existing.sourceSessionIds, sessionId]
+          }
+          existing.updatedAt = new Date().toISOString()
+          await kv.set(KV.procedural, existing.id, existing)
+
+          try {
+            await recordAudit(kv, "skill_extract", "mem::skill-extract-step", [], {
+              skillId: existing.id,
+              reinforced: true,
+              sessionId,
+            })
+          } catch {}
+
+          return {
+            done: true,
+            result: {
+              success: true,
+              extracted: true,
+              reinforced: true,
+              skill: existing,
+            },
+          }
+        }
+
+        const now = new Date().toISOString()
+        const skill: ProceduralMemory = {
+          id: fp,
+          name: parsed.title,
+          triggerCondition: parsed.trigger,
+          steps: parsed.steps,
+          expectedOutcome: parsed.expectedOutcome,
+          strength: 0.6,
+          frequency: 1,
+          tags: parsed.tags,
+          concepts: intermediateState.sessionConcepts,
+          sourceSessionIds: [sessionId],
+          sourceObservationIds: intermediateState.observationIds,
+          createdAt: now,
+          updatedAt: now,
+        }
+        await kv.set(KV.procedural, skill.id, skill)
+
+        try {
+          await recordAudit(kv, "skill_extract", "mem::skill-extract-step", [], {
+            skillId: skill.id,
+            title: parsed.title,
+            steps: parsed.steps.length,
+            sessionId,
+          })
+        } catch {}
+
+        logger.info("Skill extracted (step)", {
+          id: skill.id,
+          title: parsed.title,
+          steps: parsed.steps.length,
+        })
+
+        return {
+          done: true,
+          result: {
+            success: true,
+            extracted: true,
+            reinforced: false,
+            skill,
+          },
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }

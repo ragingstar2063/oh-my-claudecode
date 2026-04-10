@@ -27,6 +27,8 @@ import {
   createProvider,
   createFallbackProvider,
   createEmbeddingProvider,
+  hasLLMCredentials,
+  LazyLLMProvider,
 } from "./providers/index.js"
 import { YithKV } from "./state/kv.js"
 import { createFakeSdk, type FakeSdk } from "./state/fake-sdk.js"
@@ -38,17 +40,27 @@ import { VERSION } from "./version.js"
 
 import { registerPrivacyFunction } from "./functions/privacy.js"
 import { registerObserveFunction } from "./functions/observe.js"
-import { registerCompressFunction } from "./functions/compress.js"
+import {
+  registerCompressFunction,
+  registerCompressStepFunction,
+} from "./functions/compress.js"
 import {
   registerSearchFunction,
   rebuildIndex,
   getSearchIndex,
+  registerVectorIndex,
 } from "./functions/search.js"
 import { registerContextFunction } from "./functions/context.js"
-import { registerSummarizeFunction } from "./functions/summarize.js"
+import {
+  registerSummarizeFunction,
+  registerSummarizeStepFunction,
+} from "./functions/summarize.js"
 import { registerMigrateFunction } from "./functions/migrate.js"
 import { registerFileIndexFunction } from "./functions/file-index.js"
-import { registerConsolidateFunction } from "./functions/consolidate.js"
+import {
+  registerConsolidateFunction,
+  registerConsolidateStepFunction,
+} from "./functions/consolidate.js"
 import { registerPatternsFunction } from "./functions/patterns.js"
 import { registerRememberFunction } from "./functions/remember.js"
 import { registerEvictFunction } from "./functions/evict.js"
@@ -59,32 +71,61 @@ import { registerProfileFunction } from "./functions/profile.js"
 import { registerAutoForgetFunction } from "./functions/auto-forget.js"
 import { registerExportImportFunction } from "./functions/export-import.js"
 import { registerEnrichFunction } from "./functions/enrich.js"
-import { registerGraphFunction } from "./functions/graph.js"
-import { registerConsolidationPipelineFunction } from "./functions/consolidation-pipeline.js"
+import {
+  registerGraphFunction,
+  registerGraphStepFunction,
+} from "./functions/graph.js"
+import {
+  registerConsolidationPipelineFunction,
+  registerConsolidationPipelineStepFunction,
+} from "./functions/consolidation-pipeline.js"
 import { registerSnapshotFunction } from "./functions/snapshot.js"
 import { registerActionsFunction } from "./functions/actions.js"
 import { registerFrontierFunction } from "./functions/frontier.js"
 import { registerLeasesFunction } from "./functions/leases.js"
 import { registerSignalsFunction } from "./functions/signals.js"
 import { registerCheckpointsFunction } from "./functions/checkpoints.js"
-import { registerFlowCompressFunction } from "./functions/flow-compress.js"
+import {
+  registerFlowCompressFunction,
+  registerFlowCompressStepFunction,
+} from "./functions/flow-compress.js"
 import { registerSketchesFunction } from "./functions/sketches.js"
-import { registerCrystallizeFunction } from "./functions/crystallize.js"
+import {
+  registerCrystallizeFunction,
+  registerCrystallizeStepFunction,
+} from "./functions/crystallize.js"
 import { registerDiagnosticsFunction } from "./functions/diagnostics.js"
 import { registerFacetsFunction } from "./functions/facets.js"
 import { registerVerifyFunction } from "./functions/verify.js"
 import { registerCascadeFunction } from "./functions/cascade.js"
 import { registerLessonsFunctions } from "./functions/lessons.js"
-import { registerReflectFunctions } from "./functions/reflect.js"
+import {
+  registerReflectFunctions,
+  registerReflectStepFunction,
+} from "./functions/reflect.js"
 import { registerWorkingMemoryFunctions } from "./functions/working-memory.js"
-import { registerSkillExtractFunctions } from "./functions/skill-extract.js"
-import { registerSlidingWindowFunction } from "./functions/sliding-window.js"
-import { registerQueryExpansionFunction } from "./functions/query-expansion.js"
-import { registerTemporalGraphFunctions } from "./functions/temporal-graph.js"
+import {
+  registerSkillExtractFunctions,
+  registerSkillExtractStepFunction,
+} from "./functions/skill-extract.js"
+import {
+  registerSlidingWindowFunction,
+  registerSlidingWindowStepFunction,
+  registerEnrichSessionStepFunction,
+} from "./functions/sliding-window.js"
+import {
+  registerQueryExpansionFunction,
+  registerQueryExpansionStepFunction,
+} from "./functions/query-expansion.js"
+import {
+  registerTemporalGraphFunctions,
+  registerTemporalGraphStepFunction,
+} from "./functions/temporal-graph.js"
 import { registerRetentionFunctions } from "./functions/retention.js"
 import { registerEventTriggers } from "./triggers/events.js"
 import { DedupMap } from "./functions/dedup.js"
 import { MetricsStore } from "./eval/metrics-store.js"
+import { WorkPacketStore } from "./state/work-packets.js"
 
 /** Options accepted by createYithArchive(). */
 export interface YithArchiveOptions {
@@ -100,6 +141,20 @@ export interface YithArchiveHandle {
   kv: YithKV
   /** Archive version. */
   version: string
+  /**
+   * Whether the configured LLM provider has credentials available. Tools
+   * consult this to decide whether to route LLM-requiring functions
+   * through the direct path (`true`) or the work-packet state-machine
+   * path (`false`). Snapshot at boot — if a user adds an API key mid-
+   * session, they need to restart for the direct path to kick in.
+   */
+  hasLLMProvider: boolean
+  /**
+   * Persistent store for work-packet continuations. Used by yith_trigger
+   * and yith_commit_work in the MCP layer to pause and resume state-
+   * machine functions across tool calls.
+   */
+  workPacketStore: WorkPacketStore
   /** Persist all pending state to disk and release timers. */
   shutdown(): Promise<void>
 
@@ -157,18 +212,27 @@ export function createYithArchive(
   const embeddingConfig = loadEmbeddingConfig()
   const fallbackConfig = loadFallbackConfig()
 
-  const provider =
-    fallbackConfig.providers.length > 0
+  const llmAvailable = hasLLMCredentials(config.provider)
+  const provider = new LazyLLMProvider(() => {
+    if (!llmAvailable) return null
+    return fallbackConfig.providers.length > 0
       ? createFallbackProvider(config.provider, fallbackConfig)
       : createProvider(config.provider)
+  })
 
   const embeddingProvider = createEmbeddingProvider()
 
   logger.info(`Starting Yith Archive v${VERSION}`)
   logger.info(`Data dir: ${dataDir}`)
-  logger.info(
-    `Provider: ${config.provider.provider} (${config.provider.model})`,
-  )
+  if (llmAvailable) {
+    logger.info(
+      `LLM provider: ${config.provider.provider} (${config.provider.model}) — deferred, constructs on first use`,
+    )
+  } else {
+    logger.info(
+      `LLM provider: none configured — work-packet mode (advanced ops will return work descriptors for the session agent to execute)`,
+    )
+  }
   if (embeddingProvider) {
     logger.info(
       `Embedding provider: ${embeddingProvider.name} (${embeddingProvider.dimensions} dims)`,
@@ -182,16 +246,23 @@ export function createYithArchive(
   const metricsStore = new MetricsStore(kv)
   const dedupMap = new DedupMap()
   const vectorIndex = embeddingProvider ? new VectorIndex() : null
+  // Wire the vector index + embedder into search.ts so putMemory /
+  // deleteMemory / rebuildIndex can keep hybrid search in sync with
+  // memory writes. No-ops if the embedding provider isn't configured.
+  registerVectorIndex(vectorIndex, embeddingProvider)
 
   registerPrivacyFunction(sdk)
   registerObserveFunction(sdk, kv, dedupMap, config.maxObservationsPerSession)
   registerCompressFunction(sdk, kv, provider, metricsStore)
+  registerCompressStepFunction(sdk, kv, metricsStore)
   registerSearchFunction(sdk, kv)
   registerContextFunction(sdk, kv, config.tokenBudget)
   registerSummarizeFunction(sdk, kv, provider, metricsStore)
+  registerSummarizeStepFunction(sdk, kv, metricsStore)
   registerMigrateFunction(sdk, kv)
   registerFileIndexFunction(sdk, kv)
   registerConsolidateFunction(sdk, kv, provider)
+  registerConsolidateStepFunction(sdk, kv)
   registerPatternsFunction(sdk, kv)
   registerRememberFunction(sdk, kv)
   registerEvictFunction(sdk, kv)
@@ -204,29 +275,39 @@ export function createYithArchive(
 
   if (isGraphExtractionEnabled()) {
     registerGraphFunction(sdk, kv, provider)
+    registerGraphStepFunction(sdk, kv)
     logger.info(`Knowledge graph: extraction enabled`)
   }
 
   registerConsolidationPipelineFunction(sdk, kv, provider)
+  registerConsolidationPipelineStepFunction(sdk, kv)
   registerActionsFunction(sdk, kv)
   registerFrontierFunction(sdk, kv)
   registerLeasesFunction(sdk, kv)
   registerSignalsFunction(sdk, kv)
   registerCheckpointsFunction(sdk, kv)
   registerFlowCompressFunction(sdk, kv, provider)
+  registerFlowCompressStepFunction(sdk, kv)
   registerSketchesFunction(sdk, kv)
   registerCrystallizeFunction(sdk, kv, provider)
+  registerCrystallizeStepFunction(sdk, kv)
   registerDiagnosticsFunction(sdk, kv)
   registerFacetsFunction(sdk, kv)
   registerVerifyFunction(sdk, kv)
   registerLessonsFunctions(sdk, kv)
   registerReflectFunctions(sdk, kv, provider)
+  registerReflectStepFunction(sdk, kv)
   registerWorkingMemoryFunctions(sdk, kv, config.tokenBudget)
   registerSkillExtractFunctions(sdk, kv, provider)
+  registerSkillExtractStepFunction(sdk, kv)
   registerCascadeFunction(sdk, kv)
   registerSlidingWindowFunction(sdk, kv, provider)
+  registerSlidingWindowStepFunction(sdk, kv)
+  registerEnrichSessionStepFunction(sdk, kv)
   registerQueryExpansionFunction(sdk, provider)
+  registerQueryExpansionStepFunction(sdk)
   registerTemporalGraphFunctions(sdk, kv, provider)
+  registerTemporalGraphStepFunction(sdk, kv)
   registerRetentionFunctions(sdk, kv)
 
   const snapshotConfig = loadSnapshotConfig()
@@ -251,7 +332,17 @@ export function createYithArchive(
   )
   registerEventTriggers(sdk, kv)
 
-  const indexPersistence = new IndexPersistence(kv, bm25Index, vectorIndex)
+  const indexPersistence = new IndexPersistence(
+    kv,
+    bm25Index,
+    vectorIndex,
+    embeddingProvider
+      ? {
+          name: embeddingProvider.name,
+          dimensions: embeddingProvider.dimensions,
+        }
+      : null,
+  )
 
   // Fire-and-forget background index restore. Real usage of the archive
   // works before this completes — new writes just skip the index until ready.
@@ -310,10 +401,19 @@ export function createYithArchive(
     timers.push(t)
   }
 
+  const workPacketStore = new WorkPacketStore(kv)
+  // Fire-and-forget: clear any pending work-packet continuations that
+  // expired since the last boot. Logs a count if >0.
+  void workPacketStore.sweepExpired().catch((err) => {
+    logger.warn("Work-packet sweep failed:", err)
+  })
+
   return {
     sdk,
     kv,
     version: VERSION,
+    hasLLMProvider: llmAvailable,
+    workPacketStore,
     remember: (data) => sdk.trigger("mem::remember", data),
     recall: (data) => sdk.trigger("mem::smart-search", data),
     search: (data) => sdk.trigger("mem::smart-search", data),

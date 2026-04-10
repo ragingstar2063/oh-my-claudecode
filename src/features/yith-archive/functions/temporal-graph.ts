@@ -10,6 +10,11 @@ import type {
 } from "../types.js";
 import { KV, generateId } from "../state/schema.js";
 import type { StateKV } from "../state/kv.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 const TEMPORAL_EXTRACTION_SYSTEM = `You are a temporal knowledge extraction engine. Given observations, extract entities AND their temporal relationships with full context metadata.
 
@@ -472,4 +477,176 @@ function buildTimeline(
     validTo: e.tvalidEnd,
     context: e.context,
   }));
+}
+
+interface TemporalGraphArgs {
+  observations: Array<{
+    id: string
+    title: string
+    narrative: string
+    concepts: string[]
+    files: string[]
+    type: string
+    timestamp: string
+  }>
+}
+
+interface TemporalGraphStepState {
+  obsIds: string[]
+  packetId: string
+}
+
+/**
+ * Work-packet variant of mem::temporal-graph-extract. Single-call 2-state
+ * machine. Shares the same parse/merge/version logic as the direct path.
+ */
+export function registerTemporalGraphStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction(
+    { id: "mem::temporal-graph-extract-step" },
+    async (
+      input: StepInput<TemporalGraphArgs, TemporalGraphStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        if (!originalArgs.observations || originalArgs.observations.length === 0) {
+          return {
+            done: true,
+            result: { success: false, error: "No observations provided" },
+          }
+        }
+        const items = originalArgs.observations
+          .map(
+            (o, i) =>
+              `[${i + 1}] Type: ${o.type}\nTimestamp: ${o.timestamp}\nTitle: ${o.title}\nNarrative: ${o.narrative}\nConcepts: ${(o.concepts ?? []).join(", ")}\nFiles: ${(o.files ?? []).join(", ")}`,
+          )
+          .join("\n\n")
+
+        const packet = createWorkPacket({
+          kind: "compress",
+          systemPrompt: TEMPORAL_EXTRACTION_SYSTEM,
+          userPrompt: `Extract temporal knowledge graph from:\n\n${items}`,
+          purpose: `temporal-graph extract from ${originalArgs.observations.length} observations`,
+        })
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: {
+            obsIds: originalArgs.observations.map((o) => o.id),
+            packetId: packet.id,
+          },
+          workPackets: [packet],
+          instructions:
+            "Run the temporal-graph extraction prompt through your LLM and " +
+            "commit the XML. Single-round flow.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+        const response = completions?.[intermediateState.packetId]
+        if (!response) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `no completion for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const obsIds = intermediateState.obsIds
+        const { nodes, edges } = parseTemporalGraphXml(response, obsIds)
+
+        const existingNodes = await kv.list<GraphNode>(KV.graphNodes)
+        const existingEdges = await kv.list<GraphEdge>(KV.graphEdges)
+
+        const idRemap = new Map<string, string>()
+        for (const node of nodes) {
+          const existing = existingNodes.find(
+            (n) => n.name === node.name && n.type === node.type,
+          )
+          if (existing) {
+            const oldId = node.id
+            const merged = {
+              ...existing,
+              sourceObservationIds: [
+                ...new Set([...existing.sourceObservationIds, ...obsIds]),
+              ],
+              properties: { ...existing.properties, ...node.properties },
+              updatedAt: new Date().toISOString(),
+              aliases: [
+                ...new Set([
+                  ...(existing.aliases || []),
+                  ...(node.aliases || []),
+                ]),
+              ],
+            }
+            if (merged.aliases.length === 0) delete (merged as any).aliases
+            await kv.set(KV.graphNodes, existing.id, merged)
+            node.id = existing.id
+            idRemap.set(oldId, existing.id)
+          } else {
+            await kv.set(KV.graphNodes, node.id, node)
+            existingNodes.push(node)
+          }
+        }
+
+        for (const edge of edges) {
+          if (idRemap.has(edge.sourceNodeId)) {
+            edge.sourceNodeId = idRemap.get(edge.sourceNodeId)!
+          }
+          if (idRemap.has(edge.targetNodeId)) {
+            edge.targetNodeId = idRemap.get(edge.targetNodeId)!
+          }
+          const existingKey = `${edge.sourceNodeId}|${edge.targetNodeId}|${edge.type}`
+          const existingEdge = existingEdges.find(
+            (e) =>
+              `${e.sourceNodeId}|${e.targetNodeId}|${e.type}` === existingKey,
+          )
+          if (existingEdge) {
+            const updatedOld = {
+              ...existingEdge,
+              isLatest: false,
+              tvalidEnd:
+                existingEdge.tvalidEnd || new Date().toISOString(),
+              supersededBy: edge.id,
+            }
+            await kv.set(KV.graphEdges, existingEdge.id, updatedOld)
+            await kv.set(KV.graphEdgeHistory, existingEdge.id, updatedOld)
+            edge.version = (existingEdge.version || 1) + 1
+          }
+          await kv.set(KV.graphEdges, edge.id, edge)
+          existingEdges.push(edge)
+        }
+
+        logger.info("Temporal graph extraction complete (step)", {
+          nodes: nodes.length,
+          edges: edges.length,
+        })
+        return {
+          done: true,
+          result: {
+            success: true,
+            nodesAdded: nodes.length,
+            edgesAdded: edges.length,
+          },
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
 }

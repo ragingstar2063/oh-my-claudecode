@@ -12,6 +12,12 @@ import type {
 } from "../types.js";
 import { recordAudit } from "./audit.js";
 import { REFLECT_SYSTEM, buildReflectPrompt } from "../prompts/reflect.js";
+import {
+  createWorkPacket,
+  planLoopBatches,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 interface ConceptCluster {
   concepts: string[];
@@ -471,4 +477,340 @@ export function registerReflectFunctions(
       return { success: true, decayed, softDeleted, total: items.length };
     },
   );
+}
+
+/** Per-cluster task for reflect-step. */
+interface ReflectTask {
+  conceptNames: string[]
+  prompt: string
+  factIds: string[]
+  lessonIds: string[]
+  crystalIds: string[]
+  packetId?: string
+}
+
+interface ReflectArgs {
+  maxClusters?: number
+  project?: string
+}
+
+interface ReflectStepState {
+  originalArgs: ReflectArgs
+  tasks: ReflectTask[]
+  batchStart: number
+  batchSize: number
+  totalBatches: number
+  newInsights: number
+  reinforced: number
+  clustersSkipped: number
+  usedFallback: boolean
+}
+
+const REFLECT_MAX_INSIGHTS_PER_CLUSTER = 5
+const REFLECT_MAX_TOTAL = 50
+
+/**
+ * Work-packet variant of mem::reflect. Loop over concept clusters; one
+ * LLM call per cluster to extract insights. Self-looping state 1 with
+ * adaptive batching.
+ */
+export function registerReflectStepFunction(sdk: FakeSdk, kv: StateKV): void {
+  sdk.registerFunction(
+    { id: "mem::reflect-step" },
+    async (
+      input: StepInput<ReflectArgs, ReflectStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        const maxClusters = Math.min(originalArgs?.maxClusters ?? 10, 20)
+
+        const [graphNodes, graphEdges, semanticMemories, lessons, crystals] =
+          await Promise.all([
+            kv.list<GraphNode>(KV.graphNodes).catch(() => []),
+            kv.list<GraphEdge>(KV.graphEdges).catch(() => []),
+            kv.list<SemanticMemory>(KV.semantic).catch(() => []),
+            kv.list<Lesson>(KV.lessons).catch(() => []),
+            kv.list<Crystal>(KV.crystals).catch(() => []),
+          ])
+
+        let activeLessons = lessons.filter((l) => !l.deleted)
+        if (originalArgs?.project) {
+          activeLessons = activeLessons.filter(
+            (l) => l.project === originalArgs.project,
+          )
+        }
+
+        let conceptClusters = buildGraphClusters(
+          graphNodes,
+          graphEdges,
+          maxClusters,
+        )
+        const usedFallback = conceptClusters.length === 0
+        if (usedFallback) {
+          conceptClusters = buildJaccardClusters(
+            semanticMemories,
+            activeLessons,
+            maxClusters,
+          )
+        }
+
+        // Build tasks for clusters with enough material.
+        const tasks: ReflectTask[] = []
+        let clustersSkipped = 0
+        for (const conceptNames of conceptClusters) {
+          const conceptSet = new Set(conceptNames.map((c) => c.toLowerCase()))
+
+          const clusterFacts = semanticMemories.filter((s) => {
+            const factTerms = s.fact.toLowerCase().split(/\s+/)
+            return factTerms.some((t) => conceptSet.has(t))
+          })
+          const clusterLessons = activeLessons.filter(
+            (l) =>
+              l.tags.some((t) => conceptSet.has(t.toLowerCase())) ||
+              conceptNames.some((c) =>
+                l.content.toLowerCase().includes(c.toLowerCase()),
+              ),
+          )
+          const clusterCrystals = crystals.filter((c) =>
+            (c.lessons || []).some((l) =>
+              conceptNames.some((cn) =>
+                l.toLowerCase().includes(cn.toLowerCase()),
+              ),
+            ),
+          )
+
+          const totalItems =
+            clusterFacts.length + clusterLessons.length + clusterCrystals.length
+          if (totalItems < 3) {
+            clustersSkipped++
+            continue
+          }
+
+          const cluster: ConceptCluster = {
+            concepts: conceptNames,
+            facts: clusterFacts.map((f) => ({
+              fact: f.fact,
+              confidence: f.confidence,
+            })),
+            lessons: clusterLessons.map((l) => ({
+              content: l.content,
+              confidence: l.confidence,
+            })),
+            crystalNarratives: clusterCrystals.map((c) => c.narrative),
+            factIds: clusterFacts.map((f) => f.id),
+            lessonIds: clusterLessons.map((l) => l.id),
+            crystalIds: clusterCrystals.map((c) => c.id),
+          }
+
+          tasks.push({
+            conceptNames,
+            prompt: buildReflectPrompt(cluster),
+            factIds: cluster.factIds,
+            lessonIds: cluster.lessonIds,
+            crystalIds: cluster.crystalIds,
+          })
+        }
+
+        if (tasks.length === 0) {
+          try {
+            await recordAudit(kv, "reflect", "mem::reflect-step", [], {
+              newInsights: 0,
+              reinforced: 0,
+              clustersProcessed: 0,
+              clustersSkipped,
+              usedFallback,
+            })
+          } catch {}
+          return {
+            done: true,
+            result: {
+              success: true,
+              newInsights: 0,
+              reinforced: 0,
+              clustersProcessed: 0,
+              clustersSkipped,
+              usedFallback,
+            },
+          }
+        }
+
+        const totalBytes = tasks.reduce(
+          (sum, t) => sum + t.prompt.length + REFLECT_SYSTEM.length,
+          0,
+        )
+        const plan = planLoopBatches(tasks.length, totalBytes)
+
+        const state: ReflectStepState = {
+          originalArgs,
+          tasks,
+          batchStart: 0,
+          batchSize: plan.batchSize,
+          totalBatches: plan.totalBatches,
+          newInsights: 0,
+          reinforced: 0,
+          clustersSkipped,
+          usedFallback,
+        }
+        const batchPackets = buildReflectBatch(state)
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: state,
+          workPackets: batchPackets,
+          instructions:
+            `Reflect loop — batch 1 of ${plan.totalBatches}. ` +
+            `Run each of these ${batchPackets.length} cluster prompts and ` +
+            "commit all completions together.",
+        }
+      }
+
+      if (step === 1) {
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: { success: false, error: "missing intermediate state" },
+          }
+        }
+
+        const batchEnd = Math.min(
+          intermediateState.batchStart + intermediateState.batchSize,
+          intermediateState.tasks.length,
+        )
+
+        // We need a running total across rounds for the maxTotal cap.
+        let totalInsights =
+          intermediateState.newInsights + intermediateState.reinforced
+
+        for (let i = intermediateState.batchStart; i < batchEnd; i++) {
+          const task = intermediateState.tasks[i]
+          if (!task.packetId) continue
+          const response = completions?.[task.packetId]
+          task.packetId = undefined
+          if (!response) continue
+
+          if (totalInsights >= REFLECT_MAX_TOTAL) break
+
+          const insightRegex =
+            /<insight\s+confidence="([^"]+)"\s+title="([^"]+)">([\s\S]*?)<\/insight>/g
+          let match
+          let clusterCount = 0
+
+          while (
+            (match = insightRegex.exec(response)) !== null &&
+            clusterCount < REFLECT_MAX_INSIGHTS_PER_CLUSTER &&
+            totalInsights < REFLECT_MAX_TOTAL
+          ) {
+            const parsedConf = parseFloat(match[1])
+            const confidence = Number.isNaN(parsedConf)
+              ? 0.5
+              : Math.max(0, Math.min(1, parsedConf))
+            const title = match[2].trim()
+            const content = match[3].trim()
+            if (!content) continue
+
+            const fp = fingerprintId("ins", content.trim().toLowerCase())
+            const existing = await kv.get<Insight>(KV.insights, fp)
+
+            if (existing && !existing.deleted) {
+              reinforceInsight(existing)
+              await kv.set(KV.insights, existing.id, existing)
+              intermediateState.reinforced++
+            } else {
+              const now = new Date().toISOString()
+              const insight: Insight = {
+                id: fp,
+                title,
+                content,
+                confidence,
+                reinforcements: 0,
+                sourceConceptCluster: task.conceptNames,
+                sourceMemoryIds: task.factIds,
+                sourceLessonIds: task.lessonIds,
+                sourceCrystalIds: task.crystalIds,
+                project: intermediateState.originalArgs?.project,
+                tags: task.conceptNames,
+                createdAt: now,
+                updatedAt: now,
+                decayRate: 0.05,
+              }
+              await kv.set(KV.insights, insight.id, insight)
+              intermediateState.newInsights++
+            }
+            clusterCount++
+            totalInsights++
+          }
+        }
+
+        intermediateState.batchStart = batchEnd
+
+        if (
+          intermediateState.batchStart >= intermediateState.tasks.length ||
+          totalInsights >= REFLECT_MAX_TOTAL
+        ) {
+          try {
+            await recordAudit(kv, "reflect", "mem::reflect-step", [], {
+              newInsights: intermediateState.newInsights,
+              reinforced: intermediateState.reinforced,
+              clustersProcessed: intermediateState.batchStart,
+              clustersSkipped: intermediateState.clustersSkipped,
+              usedFallback: intermediateState.usedFallback,
+            })
+          } catch {}
+          return {
+            done: true,
+            result: {
+              success: true,
+              newInsights: intermediateState.newInsights,
+              reinforced: intermediateState.reinforced,
+              clustersProcessed: intermediateState.batchStart,
+              clustersSkipped: intermediateState.clustersSkipped,
+              usedFallback: intermediateState.usedFallback,
+            },
+          }
+        }
+
+        const nextPackets = buildReflectBatch(intermediateState)
+        const batchNum =
+          Math.floor(
+            intermediateState.batchStart / intermediateState.batchSize,
+          ) + 1
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState,
+          workPackets: nextPackets,
+          instructions:
+            `Reflect loop — batch ${batchNum} of ${intermediateState.totalBatches}. ` +
+            `Run these ${nextPackets.length} cluster prompts.`,
+        }
+      }
+
+      return {
+        done: true,
+        result: { success: false, error: `unknown step ${step}` },
+      }
+    },
+  )
+}
+
+function buildReflectBatch(state: ReflectStepState) {
+  const end = Math.min(
+    state.batchStart + state.batchSize,
+    state.tasks.length,
+  )
+  const packets = []
+  for (let i = state.batchStart; i < end; i++) {
+    const task = state.tasks[i]
+    const packet = createWorkPacket({
+      kind: "summarize",
+      systemPrompt: REFLECT_SYSTEM,
+      userPrompt: task.prompt,
+      purpose: `reflect on concept cluster: ${task.conceptNames.slice(0, 3).join(", ")}`,
+    })
+    task.packetId = packet.id
+    packets.push(packet)
+  }
+  return packets
 }

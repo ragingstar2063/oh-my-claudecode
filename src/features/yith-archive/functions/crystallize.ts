@@ -2,6 +2,11 @@ import type { FakeSdk } from "../state/fake-sdk.js"
 import type { StateKV } from "../state/kv.js";
 import { KV, generateId } from "../state/schema.js";
 import type { Action, ActionEdge, Crystal, MemoryProvider } from "../types.js";
+import {
+  createWorkPacket,
+  type StepInput,
+  type StepResult,
+} from "../state/work-packets.js";
 
 interface CrystalDigest {
   narrative: string;
@@ -225,6 +230,193 @@ export function registerCrystallizeFunction(
       };
     },
   );
+}
+
+/**
+ * Arguments accepted by both mem::crystallize and mem::crystallize-step.
+ * Extracted into an interface so the state-machine variant can type its
+ * originalArgs field precisely.
+ */
+interface CrystallizeArgs {
+  actionIds: string[]
+  sessionId?: string
+  project?: string
+}
+
+/**
+ * Intermediate state carried between crystallize-step's state 0 and
+ * state 1. Everything needed to finalize the crystal without re-hitting
+ * the KV is stored here so the finalize step is a pure transformation
+ * of the completion text into a Crystal record.
+ */
+interface CrystallizeStepState {
+  originalArgs: CrystallizeArgs
+  actions: Action[]
+  packetId: string
+}
+
+/**
+ * State-machine variant of mem::crystallize for the work-packet protocol.
+ *
+ * The original `mem::crystallize` function requires an LLM provider and
+ * runs the full pipeline synchronously. This variant splits it into two
+ * states so it can run in work-packet mode:
+ *
+ *   Step 0: validate inputs, load the actions and edges, build the
+ *           summarize prompt, return it as a WorkPacket without touching
+ *           the LLM.
+ *   Step 1: receive the LLM completion via the commit tool, parse it,
+ *           create the Crystal record, write to KV, propagate lessons,
+ *           and return the terminal result.
+ *
+ * The yith_trigger intercept (3b-4) picks this function when the lazy
+ * LLM provider is unresolved; users with API keys still get the direct
+ * mem::crystallize path. Both code paths end up producing identical
+ * Crystal records.
+ */
+export function registerCrystallizeStepFunction(
+  sdk: FakeSdk,
+  kv: StateKV,
+): void {
+  sdk.registerFunction(
+    { id: "mem::crystallize-step" },
+    async (
+      input: StepInput<CrystallizeArgs, CrystallizeStepState>,
+    ): Promise<StepResult> => {
+      const { step, originalArgs, intermediateState, completions } = input
+
+      if (step === 0) {
+        // STATE 0 — pre-LLM work: validate, load data, build prompt.
+        if (!originalArgs.actionIds || originalArgs.actionIds.length === 0) {
+          return {
+            done: true,
+            result: { success: false, error: "actionIds is required" },
+          }
+        }
+
+        const actions: Action[] = []
+        for (const id of originalArgs.actionIds) {
+          const action = await kv.get<Action>(KV.actions, id)
+          if (!action) {
+            return {
+              done: true,
+              result: { success: false, error: `action not found: ${id}` },
+            }
+          }
+          if (action.status !== "done" && action.status !== "cancelled") {
+            return {
+              done: true,
+              result: {
+                success: false,
+                error: `action ${id} has status "${action.status}", expected "done" or "cancelled"`,
+              },
+            }
+          }
+          actions.push(action)
+        }
+
+        const allEdges = await kv.list<ActionEdge>(KV.actionEdges)
+        const idSet = new Set(originalArgs.actionIds)
+        const relevantEdges = allEdges.filter(
+          (e) => idSet.has(e.sourceActionId) || idSet.has(e.targetActionId),
+        )
+
+        const prompt = buildChainText(actions, relevantEdges)
+        const packet = createWorkPacket({
+          kind: "summarize",
+          systemPrompt: CRYSTALLIZE_SYSTEM,
+          userPrompt: prompt,
+          purpose: `crystallize ${actions.length} action(s) into a memory digest`,
+        })
+
+        const state: CrystallizeStepState = {
+          originalArgs,
+          actions,
+          packetId: packet.id,
+        }
+
+        return {
+          done: false,
+          nextStep: 1,
+          intermediateState: state,
+          workPackets: [packet],
+          instructions:
+            "Run the summarize prompt through your own LLM access — the system prompt tells the model to output JSON — and commit the resulting JSON digest. One packet, one round.",
+        }
+      }
+
+      if (step === 1) {
+        // STATE 1 — post-LLM: parse completion, write crystal, return terminal.
+        if (!intermediateState) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: "crystallize-step: missing intermediate state for step 1",
+            },
+          }
+        }
+        const completion = completions?.[intermediateState.packetId]
+        if (!completion) {
+          return {
+            done: true,
+            result: {
+              success: false,
+              error: `crystallize-step: no completion provided for packet ${intermediateState.packetId}`,
+            },
+          }
+        }
+
+        const digest = parseDigest(completion)
+        const crystal: Crystal = {
+          id: generateId("crys"),
+          narrative: digest.narrative,
+          keyOutcomes: digest.keyOutcomes,
+          filesAffected: digest.filesAffected,
+          lessons: digest.lessons,
+          sourceActionIds: intermediateState.originalArgs.actionIds,
+          sessionId: intermediateState.originalArgs.sessionId,
+          project: intermediateState.originalArgs.project,
+          createdAt: new Date().toISOString(),
+        }
+
+        await kv.set(KV.crystals, crystal.id, crystal)
+
+        // Fire-and-forget lesson propagation — matches the direct path's
+        // Promise.all-with-catch pattern so behavior is identical.
+        await Promise.all(
+          digest.lessons.map((lesson) =>
+            sdk
+              .trigger("mem::lesson-save", {
+                content: lesson,
+                context: crystal.narrative,
+                confidence: 0.6,
+                project: intermediateState.originalArgs.project,
+                tags: [],
+                source: "crystal",
+                sourceIds: [crystal.id],
+              })
+              .catch(() => {}),
+          ),
+        )
+
+        for (const action of intermediateState.actions) {
+          const updated = { ...action, crystallizedInto: crystal.id }
+          await kv.set(KV.actions, action.id, updated)
+        }
+
+        return { done: true, result: { success: true, crystal } }
+      }
+
+      return {
+        done: true,
+        result: {
+          success: false,
+          error: `crystallize-step: unknown step ${step}`,
+        },
+      }
+    },
+  )
 }
 
 function buildChainText(actions: Action[], edges: ActionEdge[]): string {
