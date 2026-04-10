@@ -7,19 +7,111 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > *Ph'nglui mglw'nafh Cthulhu R'lyeh wgah'nagl fhtagn.*
+>
+> **The agentic operations system for [Claude Code](https://claude.ai/code).**
 
-A Cthulhu Mythos-themed agentic harness for [Claude Code](https://claude.ai/code). Provides 11 specialized Elder God agents, lifecycle hooks, a skill system, and multi-tier orchestration.
+oh-my-claudecode (OMC) turns a raw Claude Code session into a fully-orchestrated agentic environment. Instead of typing to a single model that loses its mind between sessions, you talk to **Cthulhu** — a primary orchestrator that plans, delegates to ten specialized Elder God subagents, remembers what it learned last time via a persistent archive, and trims its own context between delegations so long sessions stay sharp. It is opinionated, integrated, and end-to-end: one install, one command, every piece wired into every other piece.
 
-## What This Is
+---
 
-oh-my-claudecode extends Claude Code with a complete agentic infrastructure:
+## Why this exists
 
-- **11 Elder God agents** each specialized for a different domain
-- **5 lifecycle hooks** for todo enforcement, completion loops, code quality, and context injection
-- **9 slash commands** for invoking agents and managing sessions
-- **3-level config system** (defaults → user → project) with Zod validation
-- **Background agent management** with circuit breaker and concurrency limits
-- **Work plan system** with structured planning and review flow
+A bare Claude Code session has three structural problems. OMC exists to fix all three at once.
+
+1. **No orchestration.** One generalist model tries to do everything. It half-plans, half-searches, half-implements, and burns context on tasks that should be routed to specialists.
+2. **No memory across sessions.** Every new session starts cold. You re-explain architecture, re-point to files, re-describe conventions. Built-in mechanisms exist but cap out at ~200 lines of static text.
+3. **Context rot within a session.** Long sessions accumulate raw tool output and subagent results until the main thread is half "past grep dumps" and reasoning quality degrades. Compaction mostly happens at the limit — by then it's too late.
+
+OMC's three pillars address each problem directly.
+
+## The three pillars
+
+```
+ ┌───────────────────────────────────────────────────────────────┐
+ │                     oh-my-claudecode                          │
+ │                                                               │
+ │  ┌────────────────┐  ┌─────────────────┐  ┌───────────────┐   │
+ │  │  ORCHESTRATION │  │      MEMORY     │  │    CONTEXT    │   │
+ │  │                │  │                 │  │  DISCIPLINE   │   │
+ │  │   Cthulhu +    │  │  Yith Archive   │  │     Block     │   │
+ │  │  10 Elder God  │  │   cross-session │  │   Summarizer  │   │
+ │  │   specialists  │  │   persistent    │  │   in-session  │   │
+ │  │  intent gate   │  │   retrieval     │  │   trimming    │   │
+ │  │  delegation    │  │                 │  │               │   │
+ │  └────────────────┘  └─────────────────┘  └───────────────┘   │
+ │                                                               │
+ │  Lifecycle hooks · Work plans · Slash commands · Config       │
+ └───────────────────────────────────────────────────────────────┘
+```
+
+- **Orchestration.** Cthulhu sits at the top of every session. Every user message passes through an intent gate that classifies the request (trivial / exploratory / implementation / ambiguous) and routes it. Trivial requests run inline. Exploratory work fans out to parallel Shoggoth searches. Implementation tasks get planned as todos first and then delegated to the right specialist. Ten Elder God subagents each own a specific domain — search, architecture advisory, planning, quality review, documentation, autonomous execution, vision analysis, and more.
+
+- **Memory.** Yith Archive is a persistent, file-backed, retrieval-based memory subsystem that runs entirely in-process. New sessions start with relevant memories auto-injected from past sessions. Notable events get captured during the session and consolidated into durable lessons. No background service, no network I/O, no subprocess management — just an on-disk archive with hybrid keyword + vector retrieval.
+
+- **Context discipline.** Block Summarizer wraps every delegation. Full subagent output goes to disk at `.elder-gods/blocks/<timestamp>.md`. The main thread only carries a 3-5 bullet summary forward. Cthulhu can re-read any block with the Read tool if a summary proves insufficient. Long sessions stay small; nothing is ever lost.
+
+These aren't three plugins you pick and choose. They're one integrated system that only works because each piece knows about the others.
+
+## What you get
+
+| Capability | What it does |
+|---|---|
+| **11 Elder God agents** | Cthulhu orchestrator + 10 specialists (search, advisory, planning, review, docs, autonomy, vision, etc.) |
+| **Yith Archive** | Persistent cross-session memory with retrieval-based injection. Dozens of memory primitives: remember, search, consolidate, evict, crystallize, reflect, temporal graph, pattern extraction, and more. |
+| **Block Summarizer** | In-session delegation summarization with on-disk block archive |
+| **8 lifecycle hooks** | Auto-activation, memory redirect, todo enforcement, completion loops, code-quality checks, rule injection, write guards |
+| **9 slash commands** | Direct-invoke any mode or flow from the Claude Code chat bar |
+| **Intent gate** | Every user message is classified and routed before Cthulhu acts |
+| **Work plan system** | Multi-step planning flow with interview → scope → plan → review before execution |
+| **3-level config** | Defaults → user (`~/.claude/oh-my-claudecode.jsonc`) → project (`.claude/...`) with Zod validation and partial parsing |
+| **Background agent manager** | Circuit breaker, concurrency limits, task lifecycle tracking |
+| **Project activation** | `.elder-gods/` marker directory opts a project into Cthulhu mode — unrelated repos stay default Claude Code |
+| **Installer + doctor** | Interactive wizard, health diagnostics, agent listing |
+| **CI/CD** | GitHub Actions publishing pipeline with auto-bump, tag, release, and npm push |
+
+## Installation
+
+```bash
+npx oh-my-claudecode install
+```
+
+The installer asks a few questions and then:
+
+1. Drops hook scripts into `~/.claude/hooks/`
+2. Registers them in `~/.claude/settings.json`
+3. Copies slash command definitions to `~/.claude/commands/`
+4. Creates `~/.claude/oh-my-claudecode.jsonc` with sensible defaults
+5. Leaves your existing Claude Code config intact (backup is made)
+
+Non-interactive install (for CI or scripts):
+
+```bash
+npx oh-my-claudecode install --no-tui
+```
+
+### Requirements
+
+- Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code` or equivalent)
+- Node.js 20 or newer
+- `~/.claude/` directory writable
+- (Optional for Yith Archive summarization/consolidation) `ANTHROPIC_API_KEY` in `~/.oh-my-claudecode/yith/.env` or as an environment variable
+- (Optional for semantic memory retrieval) `@xenova/transformers` — install with `npm install @xenova/transformers` if you want embedding-backed search instead of BM25-only
+
+## Quick tour — what a session looks like
+
+Open Claude Code in any project with `.elder-gods/` at its root. The `cthulhu-auto` hook fires on session start and injects Cthulhu's orchestrator prompt. The `memory-override` hook tells the session to use Yith Archive instead of the built-in memory. Yith Archive's session-start step retrieves and injects the most relevant memories from past work on this project.
+
+You type: *"add rate limiting to the auth routes."*
+
+1. **Intent gate**: Cthulhu verbalizes what you want and classifies it as *implementation*.
+2. **Plan**: Cthulhu writes todos before touching anything.
+3. **Parallel exploration**: Shoggoth fans out in parallel to find existing middleware, the router setup, and any similar rate-limiting patterns already in the codebase. Each result is summarized by the Block Summarizer — the raw output goes to `.elder-gods/blocks/`, only bullets come back to the main thread.
+4. **Memory lookup**: Cthulhu asks Yith Archive for anything it knows about this project's middleware conventions. The archive returns (for example) *"the auth middleware uses jose; the team chose jose over jsonwebtoken due to Edge compat"* from last week's session.
+5. **Execution**: Cthulhu or a delegated specialist implements the change following the retrieved conventions.
+6. **Verification**: before declaring done, tests are run, diagnostics checked, evidence shown.
+7. **Persistence**: anything new and worth remembering is committed to Yith Archive for future sessions.
+
+On your next session in the same project, steps 4 and the initial memory injection give you a head start. On a completely unrelated project (no `.elder-gods/`), Claude Code behaves normally — OMC only activates where you've opted in.
 
 ## Agent Roster
 
@@ -37,63 +129,135 @@ oh-my-claudecode extends Claude Code with a complete agentic infrastructure:
 | **The Deep One** | Sonnet | subagent | Vision agent — images, screenshots, diagrams |
 | **Shoggoth** | Haiku | subagent | Fast parallel codebase search |
 
-## Installation
+## Yith Archive — persistent cross-session memory
 
-```bash
-npx oh-my-claudecode install
+Named for the Great Race of Yith from *The Shadow Out of Time* — mind-transferring archivists who maintain records across time — Yith Archive is OMC's canonical persistent memory subsystem. It is a novel, in-process combined implementation inspired by the broader ecosystem of agent-memory research, rewritten from scratch to fit a single-process Claude Code plugin instead of a multi-client service.
+
+### What it gives you
+
+- **Hybrid retrieval** — BM25 keyword search combined with optional semantic embedding search (via `@xenova/transformers`) and a graph retrieval weight. Only the most relevant memories get injected into new sessions, not everything.
+- **Rich memory primitives** — `remember`, `search`, `recall`, `context`, `observe`, plus dozens more under the hood: consolidation pipelines, temporal graph retrieval, lesson crystallization, pattern extraction, eviction and retention policies, file-scoped memory index, sliding window compression, query expansion, working memory, session timeline, export/import.
+- **Automatic capture** — notable events during a session can be observed into the archive; a background consolidation pass merges similar memories into distilled lessons.
+- **Zero external runtime** — file-backed JSON storage under `~/.oh-my-claudecode/yith/store.json`. No database, no background server, no subprocess, no network, no ports to manage.
+- **Replaces Claude Code's built-in auto-memory** via the `memory-override` SessionStart hook, which tells the session not to write to the built-in memory files. Disable the override with `disabled_hooks: ["memory-override"]` if you prefer to keep the built-in system active.
+
+### Programmatic API
+
+```ts
+import { createYithArchive } from "oh-my-claudecode"
+
+const archive = createYithArchive()  // defaults to ~/.oh-my-claudecode/yith
+
+await archive.remember({
+  content: "The auth middleware uses jose — jsonwebtoken was removed due to Edge incompatibility.",
+  type: "architecture",
+  concepts: ["auth", "middleware", "jose"],
+  files: ["src/middleware/auth.ts"],
+})
+
+const results = await archive.search({ query: "how does auth work", limit: 5 })
+
+// When you're done
+await archive.shutdown()
 ```
 
-The interactive wizard will:
-1. Install hook scripts to `~/.claude/hooks/`
-2. Register hooks in `~/.claude/settings.json`
-3. Install slash command files to `~/.claude/commands/`
-4. Create `~/.claude/oh-my-claudecode.jsonc` config
+### Environment configuration
 
-### Non-interactive install
+Yith Archive reads its own variables from `~/.oh-my-claudecode/yith/.env` (or the ambient environment):
 
-```bash
-npx oh-my-claudecode install --no-tui
+| Variable | Purpose |
+|---|---|
+| `ANTHROPIC_API_KEY` | LLM calls for summarization, consolidation, reflection |
+| `EMBEDDING_PROVIDER` | `xenova` for local embeddings, unset for BM25-only |
+| `AUTO_FORGET_ENABLED` | `false` to disable background eviction sweeps |
+| `CONSOLIDATION_ENABLED` | `false` to disable automatic memory consolidation |
+| `YITH_GRAPH_WEIGHT` | Weight of graph retrieval in hybrid search (default `0.3`) |
+| `YITH_DEBUG` | Any value enables verbose logging |
+
+## Block Summarizer — in-session context discipline
+
+Long Claude Code sessions die a slow death: every delegation to a subagent pipes the full raw output back into the main context. After an hour of real work, half of what's in front of the model is yesterday's grep dumps, and reasoning quality suffers accordingly.
+
+Block Summarizer is OMC's solution: at every delegation boundary, the full output is written to disk and the main thread continues from a 3-5 bullet summary. The raw block is never lost — it's sitting at `.elder-gods/blocks/<timestamp>-<slug>.md` and can be re-read with the Read tool if Cthulhu needs it.
+
+The technique is a novel combined implementation inspired by the broader ecosystem of context-compression research, adapted specifically to the delegation boundary (which is the only "block boundary" a harness can cleanly observe from outside the model).
+
+### How Cthulhu uses it
+
+Cthulhu's orchestrator prompt has two relevant principles baked in:
+
+6. **Summarize after delegation** — after every `Agent(subagent_type=...)` call, write the full output to `.elder-gods/blocks/<timestamp>-<slug>.md` and continue reasoning from a 3-5 bullet summary.
+7. **Persist insights to Yith Archive** — salient facts from delegation blocks become durable memories.
+
+You don't have to do anything to enable this — it's automatic when Cthulhu is active. Blocks accumulate as a replayable audit trail of every delegation the session performed. Commit them, grep them, diff them, or nuke the `.elder-gods/blocks/` directory between runs.
+
+### Programmatic API
+
+```ts
+import { summarizeBlock } from "oh-my-claudecode"
+
+const { summary, blockPath, blockId } = await summarizeBlock({
+  agentName: "shoggoth",
+  fullOutput: rawSubagentOutput,
+  taskDescription: "Find all usages of the legacy auth helper",
+})
 ```
-
-### Requirements
-
-- Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code` or equivalent)
-- Node.js 20+
-- `~/.claude/` directory writable
 
 ## Slash Commands
 
-After installation, these are available in Claude Code sessions:
+After installation these are available in Claude Code sessions:
 
 | Command | Description |
 |---------|-------------|
-| `/cthulhu` | Activate Cthulhu orchestrator mode |
-| `/shoggoth` | Activate Shoggoth search mode |
-| `/yog-sothoth` | Activate Yog-Sothoth advisor mode |
-| `/elder-loop` | Start the completion loop |
-| `/cancel-elder-loop` | Stop the active loop |
-| `/old-ones-init` | Generate AGENTS.md hierarchy |
-| `/invoke-shub` | Strategic planning flow |
-| `/session-handoff` | Create session continuation doc |
-| `/exorcise-ai-slop` | Purge AI code smells |
+| `/cthulhu` | Activate Cthulhu orchestrator mode (also creates `.elder-gods/` on first use) |
+| `/shoggoth` | Fast parallel codebase search |
+| `/yog-sothoth` | Consult the architecture/debug advisor |
+| `/elder-loop` | Start the self-referential completion loop |
+| `/cancel-elder-loop` | Stop the active completion loop |
+| `/old-ones-init` | Generate the hierarchical AGENTS.md knowledge base |
+| `/invoke-shub` | Strategic planning interview flow |
+| `/session-handoff` | Create a detailed session continuation document |
+| `/exorcise-ai-slop` | Purge AI-generated code smells from the current codebase |
 
-## How Agents Are Invoked
+## Lifecycle Hooks
 
-**Important difference from OpenCode**: OpenCode has a plugin API that allows registering named agents directly into its agent selector UI. Claude Code does not have an equivalent public plugin API.
+8 hooks are installed into Claude Code's `settings.json`. They provide the connective tissue between OMC's subsystems and the live session.
 
-Instead, oh-my-claudecode agents are invoked through:
+| Hook | Event | Description |
+|------|-------|-------------|
+| `cthulhu-auto` | SessionStart | Auto-activate Cthulhu orchestrator mode when `.elder-gods/` is present in the project |
+| `memory-override` | SessionStart | Redirect persistent memory writes from Claude Code's built-in auto-memory to Yith Archive |
+| `todo-continuation` | Stop | Inject a reminder to continue if incomplete todos exist when stopping |
+| `elder-loop` | Stop | Self-referential completion loop — keeps running until the promise is met |
+| `comment-checker` | PostToolUse | Warn when AI-slop comments are introduced (comments that explain obvious code) |
+| `rules-injector` | PreToolUse | Auto-inject `.elder-gods/rules/*.md` into every agent's context |
+| `write-guard` | PreToolUse | Warn when `Write` is used on an existing file (suggest `Edit` instead) |
 
-1. **Slash commands** — `/cthulhu`, `/shoggoth`, etc. activate the named agent mode
-2. **Agent tool delegation** — Cthulhu uses `Agent(subagent_type="shoggoth", ...)` to spawn specialists
-3. **Slash commands** — files in `~/.claude/commands/` are picked up by Claude Code as user-defined commands
+Disable specific hooks via config:
 
-The agents are additive — they don't replace Claude Code's built-in agent types.
+```jsonc
+{ "disabled_hooks": ["comment-checker", "write-guard"] }
+```
+
+### Activation via `.elder-gods/`
+
+By default, Cthulhu only takes over when you explicitly type `/cthulhu`. To auto-activate on every new session in a project, create the marker directory at the project root:
+
+```bash
+mkdir .elder-gods
+```
+
+The `cthulhu-auto` hook walks upward from the current directory looking for `.elder-gods/`. If it finds one, Cthulhu's orchestrator prompt is injected at SessionStart; if not, nothing happens — unrelated projects keep their normal Claude Code behavior. You can also drop architectural rules into `.elder-gods/rules/*.md` and work plans into `.elder-gods/plans/*.md` — the other hooks will pick them up automatically.
+
+Turn auto-activation off globally with:
+
+```jsonc
+{ "disabled_hooks": ["cthulhu-auto"] }
+```
 
 ## Configuration
 
-Config file: `~/.claude/oh-my-claudecode.jsonc` (user-level) and/or `.claude/oh-my-claudecode.jsonc` (project-level).
-
-Project config overrides user config for scalar/object fields. Array fields (`disabled_*`) are unioned.
+Config file: `~/.claude/oh-my-claudecode.jsonc` (user-level) and/or `.claude/oh-my-claudecode.jsonc` (project-level). Project config overrides user config for scalar and object fields. Array fields like `disabled_*` are unioned across levels.
 
 ```jsonc
 {
@@ -128,9 +292,9 @@ Project config overrides user config for scalar/object fields. Array fields (`di
 }
 ```
 
-### Available Models
+### Available models
 
-Only Claude models are used:
+Only Claude models are supported:
 
 | Short Alias | Full Model ID |
 |-------------|--------------|
@@ -138,63 +302,11 @@ Only Claude models are used:
 | `sonnet` | `claude-sonnet-4-6` |
 | `haiku` | `claude-haiku-4-5` |
 
-## Lifecycle Hooks
-
-6 hooks are installed into Claude Code's `settings.json`:
-
-| Hook | Event | Description |
-|------|-------|-------------|
-| `cthulhu-auto` | SessionStart | Auto-activate Cthulhu orchestrator mode when `.elder-gods/` is present in the project (no `/cthulhu` needed) |
-| `todo-continuation` | Stop | If incomplete todos exist when stopping, inject a reminder to continue |
-| `elder-loop` | Stop | Self-referential completion loop (set promise → keeps running until met) |
-| `comment-checker` | PostToolUse | Warn when AI-slop comments are written (explains obvious code) |
-| `rules-injector` | PreToolUse | Auto-inject `.elder-gods/rules/*.md` into agent context |
-| `write-guard` | PreToolUse | Warn when `Write` is used on an existing file (suggest `Edit`) |
-
-Disable specific hooks in config:
-```jsonc
-{ "disabled_hooks": ["comment-checker", "write-guard"] }
-```
-
-### Auto-activating Cthulhu on a project
-
-By default, Cthulhu only takes over when you explicitly type `/cthulhu`. To have every new Claude Code session in a project auto-enter Cthulhu orchestrator mode, create an `.elder-gods/` directory at the project root:
-
-```bash
-mkdir .elder-gods
-```
-
-The `cthulhu-auto` SessionStart hook walks upward from the current directory looking for `.elder-gods/`, and if it finds one, injects the Cthulhu orchestrator prompt into the session. Projects without `.elder-gods/` are left untouched, so unrelated repos keep their normal Claude Code behavior. You can also drop architectural rules into `.elder-gods/rules/*.md` and work plans into `.elder-gods/plans/*.md` — the other hooks will pick them up automatically.
-
-Turn auto-activation off globally with:
-```jsonc
-{ "disabled_hooks": ["cthulhu-auto"] }
-```
-
-## Project Structure
-
-```
-oh-my-claudecode/
-├── src/
-│   ├── agents/               # 11 Elder God agent definitions + builder
-│   ├── config/               # Zod schema — full type system
-│   ├── hooks/                # Lifecycle hook scripts and configs
-│   ├── features/
-│   │   ├── background-agent/ # BackgroundManager (circuit breaker, concurrency)
-│   │   ├── skill-loader/     # Discovers user skills from .claude/skills/
-│   │   └── mcp-manager/      # Skill-scoped MCP lifecycle
-│   ├── plugin-handlers/      # 5-phase config pipeline
-│   ├── shared/               # Logging, deep-merge, model resolution
-│   └── cli/                  # Installer, doctor, list-agents
-├── commands/                 # Markdown slash commands (installed to ~/.claude/commands/)
-└── NECRONOMICON.md           # Plugin architecture reference
-```
-
 ## Project-Level Setup
 
-### Architectural Rules
+### Architectural rules
 
-Place rules in `.elder-gods/rules/*.md` — auto-injected into every agent's context:
+Place rules in `.elder-gods/rules/*.md`. They are auto-injected into every agent's context by the `rules-injector` hook, so every specialist sees them without you repeating yourself:
 
 ```
 .elder-gods/
@@ -205,6 +317,7 @@ Place rules in `.elder-gods/rules/*.md` — auto-injected into every agent's con
 ```
 
 Example `.elder-gods/rules/no-any.md`:
+
 ```markdown
 # No TypeScript `any`
 
@@ -212,20 +325,21 @@ NEVER use `any` type. Use `unknown` and narrow appropriately, or define a proper
 This rule is non-negotiable. Tsathoggua will reject any plan that introduces `any`.
 ```
 
-### Work Plans
+### Work plans
 
 Plans are stored in `.elder-gods/plans/*.md` and reviewed by Tsathoggua before execution.
 
 Use `/invoke-shub` to start the planning flow:
-1. Shub-Niggurath surveys codebase
+
+1. Shub-Niggurath surveys the codebase
 2. Interviews you with scoping questions
-3. Creates plan at `.elder-gods/plans/[task].md`
-4. Tsathoggua reviews for executability
-5. Cthulhu orchestrates implementation
+3. Creates a plan at `.elder-gods/plans/<task>.md`
+4. Tsathoggua reviews it for executability — OKAY or REJECT with at most 3 blocking issues
+5. Cthulhu orchestrates the implementation
 
-### Knowledge Base
+### Knowledge base
 
-Use `/old-ones-init` to generate `AGENTS.md` files at the root and in key subdirectories. These give all agents project context without requiring repeated exploration.
+Use `/old-ones-init` to generate `AGENTS.md` files at the root and in key subdirectories. These give every agent project context at a glance, without repeated exploration and without consuming tool-budget on re-discovery.
 
 ## Diagnostics
 
@@ -234,16 +348,47 @@ npx oh-my-claudecode doctor
 ```
 
 Checks:
+
 - `~/.claude/` directory exists
 - `settings.json` present
 - All hook scripts installed
 - Hooks registered in settings
-- Skills installed
+- Slash commands installed
 - Plugin config valid
 
-## Agent Detail
+## Project Structure
 
-### Cthulhu (Main Orchestrator)
+```
+oh-my-claudecode/
+├── src/
+│   ├── agents/               # 11 Elder God agent definitions + builder
+│   ├── config/               # Zod schema — full type system
+│   ├── hooks/                # Lifecycle hook scripts and configs
+│   ├── features/
+│   │   ├── yith-archive/     # Persistent cross-session memory (~14k LOC)
+│   │   │   ├── functions/    #   40+ memory primitives
+│   │   │   ├── state/        #   KV store, vector index, hybrid search, reranker
+│   │   │   ├── providers/    #   Anthropic / OpenRouter / Gemini / Minimax providers
+│   │   │   ├── prompts/      #   Summarization, consolidation, reflection templates
+│   │   │   ├── triggers/     #   Event triggers for session lifecycle
+│   │   │   ├── eval/         #   Quality/validation helpers
+│   │   │   └── index.ts      #   createYithArchive() factory — public API
+│   │   ├── block-summarizer/ # In-session context trimming
+│   │   ├── background-agent/ # BackgroundManager (circuit breaker, concurrency)
+│   │   ├── skill-loader/     # Discovers user skills from .claude/skills/
+│   │   └── mcp-manager/      # Skill-scoped MCP lifecycle
+│   ├── plugin-handlers/      # 5-phase config pipeline
+│   ├── shared/               # Logging, deep-merge, model resolution
+│   └── cli/                  # Installer, doctor, list-agents
+├── commands/                 # Markdown slash commands (installed to ~/.claude/commands/)
+├── CHANGELOG.md              # Release history
+├── LICENSE                   # MIT
+└── NECRONOMICON.md           # Plugin architecture reference
+```
+
+## Agent detail
+
+### Cthulhu (main orchestrator)
 
 The heart of the system. Every user message passes through Cthulhu's intent gate:
 
@@ -252,52 +397,52 @@ The heart of the system. Every user message passes through Cthulhu's intent gate
 3. **Plan before acting** — if 2+ steps, create detailed todos immediately
 4. **Delegate aggressively** — never work alone when a specialist is available
 5. **Verify before completing** — diagnostics, tests, evidence required
+6. **Summarize after delegation** — full block to disk, main thread continues from bullets
+7. **Persist insights to Yith Archive** — salient facts become cross-session memory
 
-### Shoggoth (Codebase Search)
+### Shoggoth (codebase search)
 
-Fire 3+ in parallel. They're formless and free. Use for:
-- Finding where X is implemented
-- Discovering patterns to follow
-- Cross-module structure discovery
+Fire 3+ in parallel. They're formless and free. Use for finding where X is implemented, discovering patterns to follow, cross-module structure discovery.
 
-### Yog-Sothoth (Architecture Advisor)
+### Yog-Sothoth (architecture advisor)
 
-Consult when:
-- Architecture decision requires multi-system tradeoffs
-- After 2+ failed fix attempts
-- Completing significant implementation for self-review
+Consult when an architecture decision requires multi-system tradeoffs, after 2+ failed fix attempts, or when completing a significant implementation and you want a self-review pass. Responses always include: bottom line (2-3 sentences), action plan (≤7 steps), effort estimate.
 
-Response always includes: Bottom line (2-3 sentences), Action plan (≤7 steps), Effort estimate.
+### Shub-Niggurath + Tsathoggua (planning flow)
 
-### Shub-Niggurath + Tsathoggua (Planning Flow)
-
-Shub-Niggurath interviews → creates `.elder-gods/plans/task.md` → Tsathoggua reviews it → OKAY or REJECT with max 3 blocking issues → Cthulhu executes.
+Shub-Niggurath interviews → creates `.elder-gods/plans/<task>.md` → Tsathoggua reviews it → OKAY or REJECT with max 3 blocking issues → Cthulhu executes.
 
 ### The Elder Loop
 
-Activate with `/elder-loop [completion promise]`. The loop writes state to `.claude/elder-loop-state.json`. Each Stop event, the hook checks if the promise is met — if not, injects a reminder to continue.
-
-Deactivate with `/cancel-elder-loop`.
+Activate with `/elder-loop [completion promise]`. The loop writes state to `.claude/elder-loop-state.json`. On each Stop event, the hook checks whether the promise is met — if not, it injects a reminder to continue. Deactivate with `/cancel-elder-loop`.
 
 ## Development
 
 ```bash
-git clone https://github.com/[your-username]/oh-my-claudecode
+git clone https://github.com/ragingstar2063/oh-my-claudecode
 cd oh-my-claudecode
 npm install
 npm run build
+npm run typecheck
 ```
+
+Releases are published automatically via GitHub Actions on every push to `main` — the workflow bumps the patch version, publishes to npm, tags the commit, and creates a GitHub release.
 
 ## Philosophy
 
-Core philosophy:
-
 - **Delegate first** — specialists exist for a reason; use them
-- **Parallel by default** — independent work always runs simultaneously  
-- **Evidence required** — no task is complete without diagnostics/test proof
-- **No AI slop** — no unnecessary abstractions, comments, or scope creep
-- **Blocker-finding, not perfectionism** — Tsathoggua finds blockers, not nitpicks
+- **Parallel by default** — independent work always runs simultaneously
+- **Evidence required** — no task is complete without diagnostics or test proof
+- **Plan before touching files** — todos before edits, every time
+- **Trim on delegation boundaries** — every delegation is a block; the block lives on disk, the main thread lives in summaries
+- **Persist what matters** — across sessions, knowledge compounds; don't re-explain
+- **No AI slop** — no unnecessary abstractions, no useless comments, no scope creep
+- **Blocker-finding, not perfectionism** — reviews find actual blockers, not nitpicks
+
+## Attribution
+
+Yith Archive and Block Summarizer are novel combined implementations inspired by the broader ecosystem of agent-memory and context-compression research. They were rewritten from scratch to fit a single-process Claude Code plugin and are released here under MIT as part of oh-my-claudecode.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
