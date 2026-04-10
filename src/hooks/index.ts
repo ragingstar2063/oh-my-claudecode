@@ -5,10 +5,11 @@ export { ELDER_LOOP_HOOK_SCRIPT, getElderLoopHookConfig } from "./elder-loop.js"
 export { COMMENT_CHECKER_HOOK_SCRIPT, getCommentCheckerHookConfig } from "./comment-checker.js"
 export { RULES_INJECTOR_HOOK_SCRIPT, getRulesInjectorHookConfig } from "./rules-injector.js"
 export { WRITE_GUARD_HOOK_SCRIPT, getWriteGuardHookConfig } from "./write-guard.js"
+export { CTHULHU_AUTO_HOOK_SCRIPT, getCthulhuAutoHookConfig } from "./cthulhu-auto.js"
 
 export interface HookDefinition {
   name: HookName
-  event: "PreToolUse" | "PostToolUse" | "Stop" | "Notification"
+  event: "PreToolUse" | "PostToolUse" | "Stop" | "Notification" | "SessionStart"
   scriptPath: string
   scriptContent: string
   config: object
@@ -34,6 +35,10 @@ import {
   WRITE_GUARD_HOOK_SCRIPT,
   getWriteGuardHookConfig,
 } from "./write-guard.js"
+import {
+  CTHULHU_AUTO_HOOK_SCRIPT,
+  getCthulhuAutoHookConfig,
+} from "./cthulhu-auto.js"
 
 /** All hook definitions for the plugin */
 export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
@@ -72,6 +77,13 @@ export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
     scriptContent: WRITE_GUARD_HOOK_SCRIPT,
     config: getWriteGuardHookConfig(),
   },
+  {
+    name: "cthulhu-auto",
+    event: "SessionStart",
+    scriptPath: "~/.claude/hooks/cthulhu-auto.sh",
+    scriptContent: CTHULHU_AUTO_HOOK_SCRIPT,
+    config: getCthulhuAutoHookConfig(),
+  },
 ]
 
 /** Get hooks that should be installed, respecting disabled_hooks config */
@@ -87,6 +99,7 @@ export function buildHooksConfig(enabledHooks: HookDefinition[]): Record<string,
     PostToolUse: [],
     Stop: [],
     Notification: [],
+    SessionStart: [],
   }
 
   for (const hook of enabledHooks) {

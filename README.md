@@ -140,10 +140,11 @@ Only Claude models are used:
 
 ## Lifecycle Hooks
 
-5 hooks are installed into Claude Code's `settings.json`:
+6 hooks are installed into Claude Code's `settings.json`:
 
 | Hook | Event | Description |
 |------|-------|-------------|
+| `cthulhu-auto` | SessionStart | Auto-activate Cthulhu orchestrator mode when `.elder-gods/` is present in the project (no `/cthulhu` needed) |
 | `todo-continuation` | Stop | If incomplete todos exist when stopping, inject a reminder to continue |
 | `elder-loop` | Stop | Self-referential completion loop (set promise → keeps running until met) |
 | `comment-checker` | PostToolUse | Warn when AI-slop comments are written (explains obvious code) |
@@ -153,6 +154,21 @@ Only Claude models are used:
 Disable specific hooks in config:
 ```jsonc
 { "disabled_hooks": ["comment-checker", "write-guard"] }
+```
+
+### Auto-activating Cthulhu on a project
+
+By default, Cthulhu only takes over when you explicitly type `/cthulhu`. To have every new Claude Code session in a project auto-enter Cthulhu orchestrator mode, create an `.elder-gods/` directory at the project root:
+
+```bash
+mkdir .elder-gods
+```
+
+The `cthulhu-auto` SessionStart hook walks upward from the current directory looking for `.elder-gods/`, and if it finds one, injects the Cthulhu orchestrator prompt into the session. Projects without `.elder-gods/` are left untouched, so unrelated repos keep their normal Claude Code behavior. You can also drop architectural rules into `.elder-gods/rules/*.md` and work plans into `.elder-gods/plans/*.md` — the other hooks will pick them up automatically.
+
+Turn auto-activation off globally with:
+```jsonc
+{ "disabled_hooks": ["cthulhu-auto"] }
 ```
 
 ## Project Structure

@@ -119,6 +119,7 @@ export const HookNameSchema = z.enum([
   "bash-read-guard",          // Warn on cat/head in bash (use Read)
   "keyword-detector",         // Detect keywords → trigger agents
   "rules-injector",           // Inject .elder-gods/rules/*.md
+  "cthulhu-auto",             // Auto-activate Cthulhu when .elder-gods/ is present
 ])
 
 export type HookName = z.infer<typeof HookNameSchema>
