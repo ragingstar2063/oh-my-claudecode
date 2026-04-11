@@ -4,6 +4,7 @@ import { fileURLToPath } from "url"
 import { execFileSync } from "node:child_process"
 import { runInstall } from "./install.js"
 import { runDoctor, printYithFunctionCatalog } from "./doctor.js"
+import { CLI_VERSION } from "./version.js"
 import { runBind } from "./bind.js"
 import {
   buildClaudePSpawnCommand,
@@ -22,7 +23,7 @@ const program = new Command()
 program
   .name("oh-my-claudecode")
   .description("Elder Gods agentic harness for Claude Code")
-  .version("0.1.0")
+  .version(CLI_VERSION)
 
 program
   .command("install")
@@ -91,12 +92,69 @@ program
     "1h",
   )
   .option("--force <phase>", "Re-run a specific phase even if already completed")
+  .option(
+    "--claude-only",
+    "Run only the claude_transcripts phase. Used by the Stop hook for fast per-tick ingestion.",
+  )
+  .option(
+    "--compress-only",
+    "Spawn `claude -p` to drain the pending-compression queue and exit. Non-blocking when --background is set.",
+  )
+  .option(
+    "--background",
+    "Fork the current invocation into the background and return immediately. Used by the Stop hook so assistant responses don't block.",
+  )
+  .option(
+    "--project <cwd>",
+    "Scope the transcript scan to a specific project cwd (default: all projects).",
+  )
   .action(async (options: {
     resume?: boolean
     installCron?: boolean
     interval?: string
     force?: string
+    claudeOnly?: boolean
+    compressOnly?: boolean
+    background?: boolean
+    project?: string
   }) => {
+    // Background fork: re-exec ourselves detached so the parent (the
+    // Stop hook shell) returns immediately. Node's spawn with `detached`
+    // + `unref` lets us exit the parent while the child continues.
+    // Used exclusively by the hook so assistant-turn latency stays low.
+    if (options.background) {
+      const { spawn } = await import("node:child_process")
+      const args = process.argv.slice(2).filter((a) => a !== "--background")
+      const child = spawn(process.execPath, [process.argv[1], ...args], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env,
+      })
+      child.unref()
+      return
+    }
+
+    if (options.compressOnly) {
+      // Spawn `claude -p` with the compression loop prompt. We don't
+      // await it — if caller passed --background we already forked
+      // above; otherwise we fire-and-forget so the CLI itself returns
+      // promptly and the user isn't blocked by a multi-minute claude -p.
+      const { spawn } = await import("node:child_process")
+      const spawnCmd = buildClaudePSpawnCommand({ limit: 50 })
+      // spawnCmd is a shell-formatted string; run via /bin/sh -c.
+      const child = spawn("/bin/sh", ["-c", spawnCmd], {
+        detached: true,
+        stdio: "ignore",
+      })
+      child.unref()
+      console.log(
+        "Spawned background compression tick via `claude -p`. " +
+          "Check `~/.oh-my-claudecode/yith/necronomicon.json` and the log " +
+          "for progress.",
+      )
+      return
+    }
+
     if (options.installCron) {
       // Install the crontab entry that runs `bind --resume`.
       const schedule = parseIntervalSpec(options.interval ?? "1h")
@@ -148,6 +206,8 @@ program
                 | "pending_compression_trigger",
             ]
           : undefined,
+        onlyPhases: options.claudeOnly ? ["claude_transcripts"] : undefined,
+        projectCwd: options.project,
       })
     } finally {
       await archive.shutdown()

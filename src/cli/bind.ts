@@ -54,6 +54,14 @@ import {
 export interface BindContext {
   archive: YithArchiveHandle
   tui: TuiWriter
+  /**
+   * Absolute project cwd to scope work to, when the caller wants a
+   * narrow run. Set by the Stop-hook capture path so each assistant-
+   * response tick only scans the current session's project's
+   * transcripts rather than every project under `~/.claude/projects/`.
+   * Undefined means "all projects" (the full bind default).
+   */
+  projectCwd?: string
 }
 
 export interface PhaseRunner {
@@ -82,6 +90,22 @@ export interface RunBindOptions {
    * phase without touching the others. Default: respect bindState.
    */
   force?: BindPhase[]
+  /**
+   * Narrow the runner to a specific subset of phases. Phases NOT in
+   * this list are neither run nor marked complete — their bindState
+   * stays untouched so the next full `bind` invocation still treats
+   * them as pending. Used by `--claude-only` / `--compress-only`
+   * flags and by the Stop hook to run a fast tick without re-doing
+   * unrelated work.
+   */
+  onlyPhases?: BindPhase[]
+  /**
+   * Absolute project cwd to pass through to phase runners via
+   * `BindContext.projectCwd`. The default `claude_transcripts`
+   * runner uses this to scope transcript ingestion to one project
+   * instead of scanning every `~/.claude/projects/` subdir.
+   */
+  projectCwd?: string
 }
 
 // ============================================================================
@@ -114,7 +138,14 @@ function phaseLabel(phase: BindPhase): string {
  * summarize what happened and exit with the right code.
  */
 export async function runBind(opts: RunBindOptions): Promise<BindState> {
-  const { archive, tui, phases = defaultPhaseRunners(), force } = opts
+  const {
+    archive,
+    tui,
+    phases = defaultPhaseRunners(),
+    force,
+    onlyPhases,
+    projectCwd,
+  } = opts
   const kv = archive.kv
 
   // Load or create bindState.
@@ -132,25 +163,55 @@ export async function runBind(opts: RunBindOptions): Promise<BindState> {
     await kv.persist()
   }
 
-  tui.line(renderSectionHeader("Necronomicon Binding Ritual"))
-  tui.line(
-    renderStatusLine("info", `Necronomicon: ${necronomiconPath()}`),
-  )
+  // The set of phases eligible to run this invocation. When the
+  // caller scopes us via `onlyPhases`, we narrow the iteration to
+  // exactly that set and leave unrelated phases' bindState
+  // untouched — crucial for the Stop-hook path where we don't want
+  // a capture tick to falsely advance the embedding/opencode/
+  // sisyphus/preliminary phases.
+  const eligible: ReadonlySet<BindPhase> =
+    onlyPhases && onlyPhases.length > 0
+      ? new Set(onlyPhases)
+      : new Set(BIND_PHASE_ORDER)
 
-  // Report any already-completed phases so the user sees resume state.
-  for (const phase of BIND_PHASE_ORDER) {
-    if (state.phases[phase].status === "completed") {
-      tui.line(
-        renderStatusLine("ok", `${phaseLabel(phase)} (already bound)`),
-      )
+  // Don't print the ritual banner when scoped — it's noisy for
+  // background hook invocations that fire every assistant turn.
+  if (!onlyPhases || onlyPhases.length > 1) {
+    tui.line(renderSectionHeader("Necronomicon Binding Ritual"))
+    tui.line(renderStatusLine("info", `Necronomicon: ${necronomiconPath()}`))
+
+    // Report any already-completed phases so the user sees resume state.
+    for (const phase of BIND_PHASE_ORDER) {
+      if (state.phases[phase].status === "completed") {
+        tui.line(
+          renderStatusLine("ok", `${phaseLabel(phase)} (already bound)`),
+        )
+      }
     }
   }
 
   const started = Date.now()
 
-  while (true) {
-    const phase = firstPendingPhase(state)
-    if (phase === null) break
+  // Iterate the narrowed phase list in BIND_PHASE_ORDER sequence.
+  // We don't use `firstPendingPhase` here because the narrow-mode
+  // caller explicitly wants to re-run specific phases regardless of
+  // their bindState — e.g., `--claude-only` fires on every hook
+  // tick and re-runs claude_transcripts with the advanced cursors,
+  // which is idempotent at the observation level.
+  const orderedEligible = BIND_PHASE_ORDER.filter((p) => eligible.has(p))
+  // When scoped, run every eligible phase unconditionally. When
+  // unscoped, skip already-completed ones (normal resume behavior).
+  const phasesToRun =
+    onlyPhases && onlyPhases.length > 0
+      ? orderedEligible
+      : orderedEligible.filter(
+          (p) => state.phases[p].status !== "completed",
+        )
+
+  for (const phase of phasesToRun) {
+    // When unscoped, stop at the first incomplete phase and fall
+    // through the legacy while(true)-pattern expectations below.
+    // Keeping the scoped path simple: just walk the list.
 
     const runner = phases.find((p) => p.name === phase)
     if (!runner) {
@@ -177,11 +238,15 @@ export async function runBind(opts: RunBindOptions): Promise<BindState> {
     await kv.set(KV.bindState, "current", state)
     await kv.persist()
 
-    tui.line(renderSectionHeader(phaseLabel(phase)))
+    // Skip the section header in scoped hook-mode — noisy for every
+    // assistant-turn tick.
+    if (!onlyPhases || onlyPhases.length > 1) {
+      tui.line(renderSectionHeader(phaseLabel(phase)))
+    }
     const phaseStarted = Date.now()
 
     try {
-      const result = await runner.run({ archive, tui })
+      const result = await runner.run({ archive, tui, projectCwd })
       const elapsed = formatDuration(Date.now() - phaseStarted)
       state = markPhase(state, phase, {
         status: "completed",
@@ -208,26 +273,29 @@ export async function runBind(opts: RunBindOptions): Promise<BindState> {
     }
   }
 
-  const totalElapsed = formatDuration(Date.now() - started)
-  tui.line(renderSectionHeader("Binding Complete"))
-  tui.line(
-    renderStatusLine(
-      "ok",
-      `The Necronomicon is bound. Ritual elapsed: ${totalElapsed}`,
-    ),
-  )
-  // Pending-compression teaser so the user knows what comes next.
-  const pending = await kv
-    .get<{ count: number }>(KV.pendingCompression, "state")
-    .catch(() => null)
-  if (pending && pending.count > 0) {
+  // Skip the closing ritual banner for scoped / background runs.
+  if (!onlyPhases || onlyPhases.length > 1) {
+    const totalElapsed = formatDuration(Date.now() - started)
+    tui.line(renderSectionHeader("Binding Complete"))
     tui.line(
       renderStatusLine(
-        "info",
-        `${pending.count} raw observations awaiting compression — ` +
-          `processed in the background or via /necronomicon-bind in a session.`,
+        "ok",
+        `The Necronomicon is bound. Ritual elapsed: ${totalElapsed}`,
       ),
     )
+    // Pending-compression teaser so the user knows what comes next.
+    const pending = await kv
+      .get<{ count: number }>(KV.pendingCompression, "state")
+      .catch(() => null)
+    if (pending && pending.count > 0) {
+      tui.line(
+        renderStatusLine(
+          "info",
+          `${pending.count} raw observations awaiting compression — ` +
+            `processed in the background or via /necronomicon-bind in a session.`,
+        ),
+      )
+    }
   }
   return state
 }
@@ -373,7 +441,38 @@ export function defaultPhaseRunners(): PhaseRunner[] {
     },
     {
       name: "claude_transcripts",
-      async run({ archive, tui }) {
+      async run({ archive, tui, projectCwd }) {
+        // Scoped mode: only scan the current project's transcripts.
+        // Used by the Stop-hook capture path so each assistant-turn
+        // tick is bounded to ~milliseconds regardless of how many
+        // unrelated projects the user has ever opened.
+        const scoped = typeof projectCwd === "string" && projectCwd.length > 0
+        if (scoped) {
+          tui.line(
+            renderStatusLine(
+              "pending",
+              `Scanning transcripts for ${projectCwd}...`,
+            ),
+          )
+          const r = (await archive.sdk.trigger("mem::backfill-sessions", {
+            projectCwd,
+            allProjects: false,
+            dryRun: false,
+          })) as {
+            observationsCreated?: number
+            transcriptsScanned?: number
+          }
+          const obs = r.observationsCreated ?? 0
+          const ts = r.transcriptsScanned ?? 0
+          tui.line(
+            renderStatusLine(
+              "ok",
+              `Ingested ${obs} new observations from ${ts} transcripts.`,
+            ),
+          )
+          return { details: { observations: obs, transcripts: ts, scoped: true } }
+        }
+
         tui.line(
           renderStatusLine(
             "pending",
