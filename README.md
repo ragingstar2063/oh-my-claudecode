@@ -60,7 +60,7 @@ These aren't three plugins you pick and choose. They're one integrated system th
 | **Yith Archive** | Persistent cross-session memory with retrieval-based injection. Dozens of memory primitives: remember, search, consolidate, evict, crystallize, reflect, temporal graph, pattern extraction, and more. Exposed to Claude Code as a stdio MCP server with 7 tools. |
 | **Work-packet protocol** | LLM-requiring memory ops (consolidate, summarize, reflect, etc.) run in sessions with no API key — each function has a state-machine variant that emits prompts for the parent agent to execute with its own subscription auth. |
 | **Block Summarizer** | In-session delegation summarization with on-disk block archive |
-| **8 lifecycle hooks** | Auto-activation, memory redirect, todo enforcement, completion loops, code-quality checks, rule injection, write guards |
+| **8 lifecycle hooks** | Auto-activation, memory redirect, continuous Yith capture, todo enforcement, completion loops, code-quality checks, rule injection, write guards |
 | **10 slash commands** | Direct-invoke any mode or flow from the Claude Code chat bar |
 | **Intent gate** | Every user message is classified and routed before Cthulhu acts |
 | **Work plan system** | Multi-step planning flow with interview → scope → plan → review before execution |
@@ -298,6 +298,7 @@ After installation these are available in Claude Code sessions:
 |------|-------|-------------|
 | `cthulhu-auto` | SessionStart | Auto-activate Cthulhu orchestrator mode when `.elder-gods/` is present in the project |
 | `memory-override` | SessionStart | Redirect persistent memory writes from Claude Code's built-in auto-memory to Yith Archive |
+| `yith-capture` | Stop | Continuous Yith ingestion — after every assistant turn, spawns a background `bind --resume --claude-only` to pull new transcript lines into the archive, and occasionally spawns `claude -p` to drain pending compression when the queue grows past threshold. Debounced; non-blocking; fail-safe. |
 | `todo-continuation` | Stop | Inject a reminder to continue if incomplete todos exist when stopping |
 | `elder-loop` | Stop | Self-referential completion loop — keeps running until the promise is met |
 | `comment-checker` | PostToolUse | Warn when AI-slop comments are introduced (comments that explain obvious code) |

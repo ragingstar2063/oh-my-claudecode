@@ -5,6 +5,82 @@ All notable changes to oh-my-claudecode are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — 2026-04-11
+
+### Added
+
+- **`yith-capture` Stop hook — continuous ingestion.** Fires after
+  every assistant turn and spawns `oh-my-claudecode bind --resume
+  --claude-only --project $CLAUDE_PROJECT_DIR` in the background via
+  a detached grandchild. Each tick is bounded to ~milliseconds because
+  (a) it only runs the `claude_transcripts` phase (no embedding
+  download, no opencode scan, no sisyphus walk, no code scan),
+  (b) it scopes to the current session's project via the
+  `CLAUDE_PROJECT_DIR` env var Claude Code sets on every hook, and
+  (c) the per-session cursor in `KV.backfillCursors` means only new
+  transcript lines get read. Debounced via a `.last-captured`
+  sentinel at 5 seconds so rapid-fire responses don't thrash the
+  filesystem. Fail-safe — exits 0 on every branch so a broken Yith
+  install can't wedge a Claude Code session.
+- **Opportunistic compression tick in the same hook.** When the
+  pending-compression counter crosses a 50-observation threshold AND
+  the compression sentinel (`.last-compressed`) is more than 5
+  minutes old, the hook also spawns `oh-my-claudecode bind --resume
+  --compress-only --background`. The `--compress-only` flag spawns
+  `claude -p` with the compression-loop prompt under a
+  `--max-budget-usd` cap and the yith MCP tool allowlist, so the
+  compression runs in a fully detached subprocess using the user's
+  subscription auth. The Stop hook itself returns in ~10 ms either
+  way — nothing blocks the assistant response.
+- **`oh-my-claudecode bind --claude-only` flag** — narrows the state
+  machine to just the `claude_transcripts` phase. Unrelated phases'
+  bindState stays untouched (pending), so the next full bind
+  invocation still runs them in order. Used by the Stop hook to
+  avoid re-downloading the embedding model or re-scanning opencode
+  on every assistant response.
+- **`oh-my-claudecode bind --project <cwd>` flag** — scopes the
+  transcript scan to a single project cwd instead of all subdirs
+  under `~/.claude/projects/`. Threads through `runBind` via a new
+  `projectCwd` field on `BindContext`, which the default
+  `claude_transcripts` runner uses to call
+  `mem::backfill-sessions` with `allProjects: false` + an explicit
+  `projectCwd`.
+- **`oh-my-claudecode bind --compress-only` flag** — spawns
+  `claude -p` with the pre-built compression loop prompt (via
+  `buildClaudePSpawnCommand`) and exits. Fire-and-forget when
+  combined with `--background`.
+- **`oh-my-claudecode bind --background` flag** — re-execs the CLI
+  as a detached grandchild and returns immediately. Used by the
+  Stop hook so capture/compression ticks never block the parent
+  Claude Code session.
+- **`onlyPhases` option on `runBind`** — filter to a subset of
+  phases. Tests cover the narrow-run paths, confirm unrelated phases
+  are neither invoked nor marked complete, and verify the scoped
+  project cwd threads through the `BindContext`.
+
+### Changed
+
+- **Hook count bumped to 8** — `yith-capture` joins the existing
+  seven. Disable it via
+  `disabled_hooks: ["yith-capture"]` in `~/.claude/oh-my-claudecode.jsonc`
+  if you prefer the old bind-and-forget model.
+- `README.md` Lifecycle Hooks table now describes `yith-capture`
+  including its debounce + threshold behavior.
+
+### Notes
+
+This release completes the "memory that actually keeps itself fresh"
+story. Before 0.2.5, the Necronomicon was a one-shot batch: you ran
+`oh-my-claudecode bind` once, and the archive stayed frozen at that
+snapshot until you manually re-ran it (or installed the hourly
+cron). After 0.2.5, every assistant turn fires a tiny capture tick
+that walks the current session's transcript cursor forward, so new
+user prompts, assistant responses, and tool calls flow into the
+raw-observation queue within seconds of happening. Compression still
+batches — raw → searchable takes up to ~5 minutes (or instantly if
+you're already inside a session running `/necronomicon-bind`), but
+the raw ingestion is now live.
+
 ## [0.2.4] — 2026-04-11
 
 ### Added
