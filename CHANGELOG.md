@@ -5,10 +5,27 @@ All notable changes to oh-my-claudecode are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.2] — 2026-04-11
+## [0.2.3] — 2026-04-11
+
+> Note: v0.2.0 and v0.2.2 were never tagged/released because the
+> CI auto-publish workflow blindly bumped patch versions on every
+> push to `main` — even on commits whose message was already
+> `chore(release): vX.Y.Z`. The user's manual release commits got
+> rewritten to v0.2.1 and v0.2.3 respectively. This release includes
+> a workflow fix (`.github/workflows/publish.yml`) that detects
+> manual release commits and respects the pre-committed version
+> instead of auto-bumping over it. Future manual releases will match
+> their declared version exactly.
 
 ### Fixed
 
+- **CI publish workflow double-bumped manual release commits.**
+  `.github/workflows/publish.yml` now inspects HEAD's commit message:
+  if it matches `chore(release): v<semver>` AND package.json is
+  already at that version, the workflow skips the auto-bump step and
+  tags/publishes the user's declared version as-is. A mismatch
+  between commit message and package.json now fails the workflow
+  with a clear error.
 - **MCP server registration landed in the wrong file.** Earlier
   installs wrote `mcpServers.yith-archive` to
   `~/.claude/settings.json`, but Claude Code reads user-level MCP
@@ -65,7 +82,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the Yith/Necronomicon dual-naming and instruct the user to run
   `/bind-necronomicon` if the tome isn't bound yet.
 
-## [0.2.0] — 2026-04-11
+## [0.2.1] — 2026-04-11
+
+> Note: v0.2.0 and v0.2.2 never existed as released tags. The CI
+> auto-publish workflow was blindly bumping patch numbers on manual
+> release commits, so the tags that actually got cut were v0.2.1 and
+> v0.2.3. The content below is what was intended as v0.2.0 and
+> shipped as v0.2.1. Fixed in the v0.2.3 workflow update.
+
 
 ### Added
 

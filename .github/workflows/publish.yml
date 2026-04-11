@@ -35,18 +35,63 @@ jobs:
 
       - run: npm run smoke
 
-      - name: Bump patch version
+      # Determine whether the incoming push is a manual release commit
+      # (authored by a human with a `chore(release): vX.Y.Z` message) or
+      # a regular feature/fix push that should get an auto-bump. The
+      # distinction matters because previously this workflow would
+      # blindly bump patch EVEN on commits the user had already labeled
+      # as a release — producing duplicate/skipped version collisions
+      # (see v0.2.0 → v0.2.1 stub, v0.2.2 → v0.2.3 stub incidents).
+      #
+      # Rule: if HEAD's commit message matches `chore(release): v<semver>`,
+      # use the version already in package.json as authoritative and
+      # skip the bump + commit steps. Otherwise run the legacy bump path.
+      - name: Detect release mode
+        id: mode
+        run: |
+          HEAD_MSG=$(git log -1 --pretty=%s)
+          echo "head_msg=$HEAD_MSG" >> "$GITHUB_OUTPUT"
+          if [[ "$HEAD_MSG" =~ ^chore\(release\):[[:space:]]*v([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            MANUAL_VERSION="${BASH_REMATCH[1]}"
+            PKG_VERSION=$(jq -r '.version' package.json)
+            if [[ "$MANUAL_VERSION" != "$PKG_VERSION" ]]; then
+              echo "::error ::Commit message declares v$MANUAL_VERSION but package.json is at v$PKG_VERSION — fix one or the other and re-push."
+              exit 1
+            fi
+            echo "manual=true" >> "$GITHUB_OUTPUT"
+            echo "version=$MANUAL_VERSION" >> "$GITHUB_OUTPUT"
+            echo "Detected manual release commit — will use v$MANUAL_VERSION as-is."
+          else
+            echo "manual=false" >> "$GITHUB_OUTPUT"
+            echo "Normal push — will auto-bump patch version."
+          fi
+
+      - name: Bump patch version (auto)
         id: version
+        if: steps.mode.outputs.manual == 'false'
         run: |
           npm version patch --no-git-tag-version
           VERSION=$(jq -r '.version' package.json)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Commit release version
+      - name: Resolve final version
+        id: final
+        run: |
+          if [[ "${{ steps.mode.outputs.manual }}" == "true" ]]; then
+            echo "version=${{ steps.mode.outputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ steps.version.outputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit release version (auto-bump only)
+        if: steps.mode.outputs.manual == 'false'
         run: |
           git add package.json package-lock.json
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "chore(release): v${{ steps.version.outputs.version }}"
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' tag -a "v${{ steps.version.outputs.version }}" -m "v${{ steps.version.outputs.version }}"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "chore(release): v${{ steps.final.outputs.version }}"
+
+      - name: Tag release
+        run: |
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' tag -a "v${{ steps.final.outputs.version }}" -m "v${{ steps.final.outputs.version }}"
 
       - name: Publish to npm
         env:
@@ -60,6 +105,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ steps.version.outputs.version }}" \
-            --title "v${{ steps.version.outputs.version }}" \
+          gh release create "v${{ steps.final.outputs.version }}" \
+            --title "v${{ steps.final.outputs.version }}" \
             --generate-notes
