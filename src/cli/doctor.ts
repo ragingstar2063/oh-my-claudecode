@@ -14,6 +14,12 @@ const CLAUDE_DIR = path.join(HOME, ".claude")
 const HOOKS_DIR = path.join(CLAUDE_DIR, "hooks")
 const SKILLS_DIR = path.join(CLAUDE_DIR, "skills")
 const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json")
+/**
+ * Claude Code reads user-level MCP servers from ~/.claude.json (top-
+ * level `mcpServers`), NOT from ~/.claude/settings.json. The doctor
+ * check MUST query this file to report the real registration state.
+ */
+const CLAUDE_JSON_PATH = path.join(HOME, ".claude.json")
 const YITH_DATA_DIR = path.join(HOME, ".oh-my-claudecode", "yith")
 const YITH_ENV_PATH = path.join(YITH_DATA_DIR, ".env")
 const MCP_SERVER_NAME = "yith-archive"
@@ -186,34 +192,76 @@ export async function runDoctor(projectDirectory: string = process.cwd()): Promi
     ),
   )
 
-  // ── Check 9: Yith MCP server registered ─────────────────────────────────────
-  if (settingsExists) {
+  // ── Check 9: Yith MCP server registered in ~/.claude.json ─────────────────
+  // Claude Code reads user-level MCP servers from ~/.claude.json top-
+  // level `mcpServers`, NOT from ~/.claude/settings.json. Check the
+  // right file or the report is meaningless. Also warn if a stale
+  // entry still exists in settings.json (old buggy install).
+  const claudeJsonExists = fs.existsSync(CLAUDE_JSON_PATH)
+  if (claudeJsonExists) {
     try {
-      const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8")) as Record<string, unknown>
-      const mcpServers = settings.mcpServers as Record<string, { command?: string; args?: string[] }> | undefined
+      const claudeJson = JSON.parse(
+        fs.readFileSync(CLAUDE_JSON_PATH, "utf-8"),
+      ) as Record<string, unknown>
+      const mcpServers = claudeJson.mcpServers as
+        | Record<string, { command?: string; args?: string[] }>
+        | undefined
       const yithEntry = mcpServers?.[MCP_SERVER_NAME]
       if (yithEntry) {
         const serverCmd = yithEntry.args?.[0] ?? yithEntry.command ?? "(unknown)"
         results.push({
           name: "Yith MCP server",
           status: "ok",
-          message: `Registered → ${path.basename(serverCmd)}`,
+          message: `Registered in ~/.claude.json → ${path.basename(serverCmd)}`,
         })
       } else {
         results.push({
           name: "Yith MCP server",
           status: "error",
-          message: "Not registered in settings.json.mcpServers — run: oh-my-claudecode install",
+          message:
+            "Not registered in ~/.claude.json.mcpServers — run: oh-my-claudecode install",
         })
       }
     } catch {
       results.push({
         name: "Yith MCP server",
         status: "error",
-        message: "Failed to parse settings.json",
+        message:
+          "~/.claude.json is not valid JSON — cannot check MCP registration",
       })
     }
+  } else {
+    results.push({
+      name: "Yith MCP server",
+      status: "warn",
+      message:
+        "~/.claude.json not found — open Claude Code at least once, then re-run install",
+    })
   }
+
+  // Warn if a stale yith-archive entry still exists in the wrong file
+  // (upgraded from an older broken install and didn't re-run install).
+  if (settingsExists) {
+    try {
+      const settings = JSON.parse(
+        fs.readFileSync(SETTINGS_PATH, "utf-8"),
+      ) as Record<string, unknown>
+      const stale = (settings.mcpServers as
+        | Record<string, unknown>
+        | undefined)?.[MCP_SERVER_NAME]
+      if (stale) {
+        results.push({
+          name: "Legacy MCP entry",
+          status: "warn",
+          message:
+            "Stale yith-archive entry in ~/.claude/settings.json — run: oh-my-claudecode install (will auto-clean)",
+        })
+      }
+    } catch {
+      /* settings.json unparseable, handled by earlier check */
+    }
+  }
+
 
   // ── Check 10: Boot Yith archive and report health ──────────────────────────
   if (yithDirExists) {

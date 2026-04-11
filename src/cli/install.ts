@@ -9,6 +9,14 @@ const HOOKS_DIR = path.join(CLAUDE_DIR, "hooks")
 const COMMANDS_DIR = path.join(CLAUDE_DIR, "commands")
 const LEGACY_SKILLS_DIR = path.join(CLAUDE_DIR, "skills")
 const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json")
+/**
+ * Claude Code's user-level config lives at ~/.claude.json — NOT at
+ * ~/.claude/settings.json. User-scoped MCP servers, onboarding flags,
+ * per-project trust state, cached growthbook features, etc. all live
+ * here. This file is typically 40+ KB of critical state; any write
+ * must be atomic (tmpfile + rename) and preserve all unknown keys.
+ */
+const CLAUDE_JSON_PATH = path.join(HOME, ".claude.json")
 const YITH_DATA_DIR = path.join(HOME, ".oh-my-claudecode", "yith")
 const YITH_ENV_PATH = path.join(YITH_DATA_DIR, ".env")
 const MCP_SERVER_NAME = "yith-archive"
@@ -168,35 +176,116 @@ function writeYithEnvKey(envKey: string, value: string): void {
 }
 
 /**
- * Register the yith-mcp server in settings.json → mcpServers. Idempotent:
- * if the entry already exists with a matching command, leaves it alone.
- * Uses an absolute path to bin/yith-mcp.js from the installed package so
- * Claude Code can spawn it regardless of whether `yith-mcp` is on PATH.
+ * Load ~/.claude.json or return null if missing/unparseable.
+ *
+ * Returns null rather than {} on parse failure so the caller can
+ * distinguish "file didn't exist" from "file was corrupted" — in the
+ * latter case we refuse to write, to avoid clobbering user state.
  */
-function registerYithMcpServer(
-  settings: Record<string, unknown>,
-  packageRoot: string,
-): void {
+function loadClaudeJson(): Record<string, unknown> | null {
+  if (!fs.existsSync(CLAUDE_JSON_PATH)) return {}
+  try {
+    const raw = fs.readFileSync(CLAUDE_JSON_PATH, "utf-8")
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Write ~/.claude.json atomically via tmpfile + rename so a crash
+ * mid-write can't leave the user with a partial/corrupt state file.
+ * Takes a backup with a timestamp suffix before replacing. The file
+ * holds all of Claude Code's user-scope state, so we preserve the
+ * original's mode and keep the backup around for manual recovery.
+ */
+function saveClaudeJsonAtomically(data: Record<string, unknown>): void {
+  const dir = path.dirname(CLAUDE_JSON_PATH)
+  const existed = fs.existsSync(CLAUDE_JSON_PATH)
+  if (existed) {
+    const backup = CLAUDE_JSON_PATH + `.bak.${Date.now()}`
+    fs.copyFileSync(CLAUDE_JSON_PATH, backup)
+    console.log(`  Backed up ~/.claude.json → ${backup}`)
+  }
+  const tmp = path.join(dir, `.claude.json.tmp.${process.pid}.${Date.now()}`)
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { encoding: "utf-8" })
+  fs.renameSync(tmp, CLAUDE_JSON_PATH)
+}
+
+/**
+ * Register the yith-mcp server in the user-level mcpServers map at
+ * ~/.claude.json. Claude Code loads user-scope MCP servers from this
+ * file — NOT from ~/.claude/settings.json where earlier versions of
+ * this installer mistakenly wrote them. Idempotent: if an entry
+ * already exists with a matching command, leaves it alone.
+ *
+ * Uses an absolute path to bin/yith-mcp.js from the installed package
+ * so Claude Code can spawn it regardless of whether `yith-mcp` is on
+ * PATH. Logs the resolved path so users can inspect the registration.
+ */
+function registerYithMcpServer(packageRoot: string): void {
   const serverPath = path.join(packageRoot, "bin", "yith-mcp.js")
+  const claudeJson = loadClaudeJson()
+  if (claudeJson === null) {
+    console.log(
+      `  ⚠ ~/.claude.json exists but is not valid JSON — refusing to write. ` +
+        `Fix or remove the file and re-run install.`,
+    )
+    return
+  }
+
   const mcpServers =
-    (settings.mcpServers as Record<string, unknown> | undefined) ?? {}
+    (claudeJson.mcpServers as Record<string, unknown> | undefined) ?? {}
 
   const existing = mcpServers[MCP_SERVER_NAME] as
     | { command?: string; args?: string[]; type?: string }
     | undefined
   if (existing?.command === "node" && existing.args?.[0] === serverPath) {
-    console.log(`  MCP server already registered: ${MCP_SERVER_NAME}`)
-  } else {
-    mcpServers[MCP_SERVER_NAME] = {
-      type: "stdio",
-      command: "node",
-      args: [serverPath],
-    }
     console.log(
-      `  Registered MCP server: ${MCP_SERVER_NAME} → node ${serverPath}`,
+      `  MCP server already registered in ~/.claude.json: ${MCP_SERVER_NAME}`,
     )
+    return
   }
-  settings.mcpServers = mcpServers
+
+  mcpServers[MCP_SERVER_NAME] = {
+    type: "stdio",
+    command: "node",
+    args: [serverPath],
+  }
+  claudeJson.mcpServers = mcpServers
+  saveClaudeJsonAtomically(claudeJson)
+  console.log(
+    `  Registered MCP server in ~/.claude.json: ${MCP_SERVER_NAME} → node ${serverPath}`,
+  )
+}
+
+/**
+ * Remove any stale yith-archive entry from ~/.claude/settings.json
+ * that earlier buggy installs wrote to the wrong file. Silent no-op
+ * if the entry isn't there. Callers should invoke this AFTER
+ * registering the correct entry in ~/.claude.json so users who
+ * upgraded from an older broken install self-heal.
+ */
+function cleanupLegacyMcpEntry(settings: Record<string, unknown>): boolean {
+  const mcpServers = settings.mcpServers as
+    | Record<string, unknown>
+    | undefined
+  if (!mcpServers || !mcpServers[MCP_SERVER_NAME]) return false
+  delete mcpServers[MCP_SERVER_NAME]
+  if (Object.keys(mcpServers).length === 0) {
+    delete settings.mcpServers
+  } else {
+    settings.mcpServers = mcpServers
+  }
+  console.log(
+    `  Cleaned up stale ${MCP_SERVER_NAME} entry from ~/.claude/settings.json ` +
+      `(legacy wrong-location install — the real entry is in ~/.claude.json)`,
+  )
+  return true
 }
 
 function ask(rl: readline.Interface, question: string): Promise<string> {
@@ -399,13 +488,22 @@ export async function runInstall(options: {
     console.log("  Embeddings: local nomic (no API key needed)")
   }
 
-  // Update settings.json
+  // Update ~/.claude/settings.json (hooks only — MCP servers live
+  // in ~/.claude.json, handled separately below).
   console.log("\n► Settings:")
   const settings = loadSettings()
   registerHooksInSettings(settings, disabledHooks)
-  registerYithMcpServer(settings, packageRoot)
+  // Heal older broken installs that wrote yith-archive to the wrong
+  // file. No-op if the user is on a fresh install.
+  cleanupLegacyMcpEntry(settings)
   saveSettings(settings)
   console.log(`  Saved settings to ${SETTINGS_PATH}`)
+
+  // Register the Yith MCP server at the user-scope location Claude
+  // Code actually reads: ~/.claude.json → mcpServers. This is a
+  // SEPARATE file from ~/.claude/settings.json above.
+  console.log("\n► MCP server registration:")
+  registerYithMcpServer(packageRoot)
 
   // Clean up stragglers left by older buggy installs that wrote to ~/.claude/skills/
   cleanupLegacySkillFiles(packageRoot)
