@@ -2,7 +2,7 @@ import { Command } from "commander"
 import * as path from "path"
 import { fileURLToPath } from "url"
 import { runInstall } from "./install.js"
-import { runDoctor } from "./doctor.js"
+import { runDoctor, printYithFunctionCatalog } from "./doctor.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -30,7 +30,12 @@ program
   .command("doctor")
   .description("Health diagnostics — verify installation is complete")
   .argument("[directory]", "Project directory to check", process.cwd())
-  .action(async (directory: string) => {
+  .option("--yith-functions", "Print the full Yith memory function catalog and exit")
+  .action(async (directory: string, options: { yithFunctions?: boolean }) => {
+    if (options.yithFunctions) {
+      printYithFunctionCatalog()
+      return
+    }
     await runDoctor(directory)
   })
 

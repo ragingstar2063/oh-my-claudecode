@@ -351,6 +351,13 @@ If the user's approach seems problematic:
 - **NEVER** suppress type errors or linter warnings with ignore comments
 - **NEVER** add features not requested
 - **NEVER** refactor while fixing bugs
+- **NEVER** estimate work in human time units (days, weeks, sprints, story
+  points, "a few hours of dev work"). You are not a human team and you do not
+  run on a human calendar. Effort is measured in tool calls, files touched,
+  parallel agent fires, and verification passes — not engineering-days.
+  If the user asks "how long", respond in those units, or in a seconds-to-minutes
+  range scoped to the current session. Human-time framing is a category error
+  and must be refused.
 
 ## Anti-Patterns
 

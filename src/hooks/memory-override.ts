@@ -36,33 +36,82 @@ done
 cat <<'PROMPT'
 [oh-my-claudecode: memory system override]
 
-This project uses **Yith Archive** as its canonical persistent memory store.
+This project uses **Yith Archive** as its canonical persistent memory store,
+exposed via the \`yith-archive\` MCP server registered in your settings.json.
 Claude Code's built-in auto-memory system (the per-project MEMORY.md index and
 typed memory files under ~/.claude/projects/<project>/memory/) is DISABLED for
 this session.
 
-Rules:
+How to use Yith Archive — seven MCP tools prefixed \`yith_\`:
+
+  yith_search(query, limit?)
+      Call this BEFORE re-exploring the codebase. Yith stores decisions,
+      constraints, user preferences, and past incidents across sessions;
+      querying first saves time and prevents re-discovering known facts.
+
+  yith_recall(query, limit?)
+      Alias of yith_search — use whichever reads more naturally.
+
+  yith_remember(content, type?, concepts?, files?, ttlDays?)
+      Save a durable cross-session memory. Use for non-obvious facts,
+      architectural decisions, user preferences, past incidents — anything
+      a future session would benefit from knowing but cannot derive from
+      the current code or git history.
+
+  yith_context(project, sessionId?)
+      Assemble a memory bundle for the current project. Useful at the start
+      of a new task to load the most relevant prior context.
+
+  yith_observe(sessionId, project, cwd, timestamp, data)
+      Log a raw observation. Observations get crystallized into durable
+      memories by background pipelines. Prefer yith_remember for things
+      you already know are worth keeping.
+
+  yith_trigger(name, args)
+      Escape hatch for ~90 advanced operations (graph extraction,
+      consolidation, temporal queries, crystallization, lesson recall,
+      reflection). The tool's description carries a curated catalog of
+      the most useful function names. Full list: \`oh-my-claudecode
+      doctor --yith-functions\`.
+
+  yith_commit_work(continuation, packetResults)
+      Closes the work-packet loop for LLM-requiring operations. See
+      below for when to use this.
+
+**Work-packet loop** (LLM ops without an API key):
+
+If you call \`yith_trigger\` on an advanced function that requires an
+LLM and Yith has no API key configured, the response will NOT be the
+operation's result — it will be a \`{status: "needs_llm_work"}\` envelope
+containing a \`continuation\` token and one or more \`workPackets\`. Each
+packet is a \`{id, kind, systemPrompt, userPrompt, purpose}\` record
+describing a prompt Yith would have sent to an LLM.
+
+When you see this, execute each packet yourself (either inline in your
+current reasoning, or by dispatching a Task subagent with the prompts),
+then call \`yith_commit_work(continuation, packetResults)\` where
+\`packetResults\` is \`[{id, completion}, ...]\` — one entry per packet,
+matched by id. Yith will resume the paused operation. The next response
+is either terminal (\`{status: "success", result}\`) or another
+\`needs_llm_work\` envelope for the next round. Loop until terminal.
+
+This lets the ~13 LLM-using functions (crystallize, consolidate,
+consolidate-pipeline, compress, summarize, flow-compress, graph-extract,
+temporal-graph-extract, expand-query, skill-extract, reflect,
+enrich-window, enrich-session) run correctly in work-packet mode, using
+your subscription auth for the LLM call instead of requiring Yith to
+have its own credentials.
+
+Rules for this session:
 - Do NOT write new memories to ~/.claude/projects/<project>/memory/ or update
   MEMORY.md under that path. Treat any existing files there as read-only legacy
   artifacts from before this plugin was installed.
-- When you learn something worth remembering across sessions (user
-  preferences, project conventions, non-obvious constraints, architectural
-  decisions, past incidents), write to Yith Archive instead. The archive lives
-  at ~/.oh-my-claudecode/yith/ and is accessed through the YithArchive helper
-  exposed by the oh-my-claudecode plugin.
-- When you need to recall past knowledge about this project, query Yith Archive
-  first. Only fall back to the built-in memory index if Yith Archive has nothing.
-- At session start, Yith Archive's SessionStart hook will inject the top
-  relevant memories automatically. Use those before re-exploring the codebase.
-
-The Yith Archive system provides:
-  remember(content, type, concepts, files)   — save a durable memory
-  search(query, limit)                        — retrieve by semantic/keyword query
-  context(project)                            — assemble the current project's memory bundle
-  observe(sessionId, project, data)           — log an observation for later extraction
-
-If you genuinely believe a piece of information belongs in the built-in memory
-system and NOT in Yith Archive, ask the user before writing it there.
+- When you learn something worth remembering across sessions, call
+  \`yith_remember\` instead of writing a file.
+- When you need context on past decisions, call \`yith_search\` first. Only
+  re-explore code if the archive has nothing.
+- Memory operations are fast and local — use them liberally. Missing a
+  relevant prior memory is more costly than calling search.
 
 [END memory system override]
 PROMPT

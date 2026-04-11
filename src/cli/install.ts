@@ -9,11 +9,194 @@ const HOOKS_DIR = path.join(CLAUDE_DIR, "hooks")
 const COMMANDS_DIR = path.join(CLAUDE_DIR, "commands")
 const LEGACY_SKILLS_DIR = path.join(CLAUDE_DIR, "skills")
 const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json")
+const YITH_DATA_DIR = path.join(HOME, ".oh-my-claudecode", "yith")
+const YITH_ENV_PATH = path.join(YITH_DATA_DIR, ".env")
+const MCP_SERVER_NAME = "yith-archive"
+
+/**
+ * Map of env var names to hosted embedding providers the installer supports.
+ * The installer uses this for both pre-existing-key detection and interactive
+ * selection. Order matters — it's the preference used when multiple keys
+ * happen to be set (mirrors detectEmbeddingProvider in yith-archive/config.ts).
+ */
+const EMBEDDING_PROVIDERS: Array<{
+  id: "local" | "gemini" | "openai" | "voyage"
+  label: string
+  envKey: string
+  description: string
+}> = [
+  {
+    id: "local",
+    label: "Local nomic",
+    envKey: "",
+    description: "nomic-embed-text-v1.5, ~137 MB, downloaded on first use — private, offline, zero setup",
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    envKey: "GEMINI_API_KEY",
+    description: "free tier: 1,500 RPM, generous for backfill",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    envKey: "OPENAI_API_KEY",
+    description: "paid, text-embedding-3-small",
+  },
+  {
+    id: "voyage",
+    label: "Voyage",
+    envKey: "VOYAGE_API_KEY",
+    description: "Anthropic's recommended partner",
+  },
+]
 
 function ensureDir(dir: string): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true })
   }
+}
+
+/** Create the Yith data dir with restrictive permissions. Idempotent. */
+function ensureYithDataDir(): void {
+  if (!fs.existsSync(YITH_DATA_DIR)) {
+    fs.mkdirSync(YITH_DATA_DIR, { recursive: true, mode: 0o700 })
+    console.log(`  Created Yith data dir: ${YITH_DATA_DIR}`)
+  } else {
+    // Tighten perms if a previous install created the dir world-readable.
+    try {
+      fs.chmodSync(YITH_DATA_DIR, 0o700)
+    } catch {
+      /* non-fatal */
+    }
+  }
+}
+
+/**
+ * Check the environment for an already-set embedding-provider API key.
+ * Returns the matching provider id + key value, or null if none set.
+ * Used to pre-seed the interactive prompt so users aren't asked twice.
+ */
+function detectExistingEmbeddingKey(): { id: "gemini" | "openai" | "voyage"; key: string } | null {
+  for (const p of EMBEDDING_PROVIDERS) {
+    if (p.envKey && process.env[p.envKey]) {
+      return { id: p.id as "gemini" | "openai" | "voyage", key: process.env[p.envKey]! }
+    }
+  }
+  return null
+}
+
+/**
+ * Prompt the user for an embedding provider choice. Returns the selected
+ * provider id and (if a hosted provider was picked) the API key to write
+ * into the Yith .env. Honors pre-existing env keys by offering them as
+ * the default instead of re-asking. Returns "local" with no key if the
+ * user takes the default or declines every hosted option.
+ */
+async function promptEmbeddingProvider(
+  rl: readline.Interface,
+): Promise<{ providerId: "local" | "gemini" | "openai" | "voyage"; apiKey?: string }> {
+  const existing = detectExistingEmbeddingKey()
+
+  if (existing) {
+    const label = EMBEDDING_PROVIDERS.find((p) => p.id === existing.id)!.label
+    const answer = await ask(
+      rl,
+      `\n► Embeddings: detected ${existing.id.toUpperCase()}_API_KEY in your shell — use ${label} for Yith embeddings? [Y/n] `,
+    )
+    if (answer.trim().toLowerCase() !== "n") {
+      return { providerId: existing.id, apiKey: existing.key }
+    }
+    // User declined the detected key — fall through to full menu.
+  }
+
+  console.log("\n► Embeddings:")
+  console.log(
+    "  Yith Archive uses local embeddings by default. Alternatives are available if you'd rather",
+  )
+  console.log("  use a hosted provider:\n")
+  EMBEDDING_PROVIDERS.forEach((p, i) => {
+    const tag = p.id === "local" ? "  [default]" : ""
+    console.log(`    ${i + 1}. ${p.label}${tag} — ${p.description}`)
+  })
+
+  const answer = await ask(rl, "\n  Choice [1]: ")
+  const idx = parseInt(answer.trim() || "1", 10) - 1
+  const chosen = EMBEDDING_PROVIDERS[idx]
+  if (!chosen || chosen.id === "local") {
+    return { providerId: "local" }
+  }
+
+  // Hosted provider chosen — collect the key. Plain readline input, not
+  // hidden — matches how `git credential` etc. work for local tools and
+  // keeps the install flow simple. Users running in screen-shared sessions
+  // can set the env var before running install instead.
+  const keyPrompt = `\n  Enter ${chosen.envKey} (or press Enter to fall back to local): `
+  const rawKey = await ask(rl, keyPrompt)
+  const key = rawKey.trim()
+  if (!key) {
+    console.log("  No key entered — falling back to local embeddings.")
+    return { providerId: "local" }
+  }
+  return { providerId: chosen.id, apiKey: key }
+}
+
+/**
+ * Write (or update) the Yith .env file with a single KEY=value line for
+ * the given embedding provider. Preserves any existing lines untouched.
+ * Sets file mode 0600 so the API key isn't world-readable.
+ */
+function writeYithEnvKey(envKey: string, value: string): void {
+  ensureYithDataDir()
+  let existing = ""
+  if (fs.existsSync(YITH_ENV_PATH)) {
+    existing = fs.readFileSync(YITH_ENV_PATH, "utf-8")
+  }
+  const lines = existing.split("\n").filter((l) => !l.startsWith(`${envKey}=`))
+  lines.push(`${envKey}=${value}`)
+  // Trim trailing empty line noise and ensure exactly one newline at EOF.
+  const content = lines.filter((l, i, arr) => !(l === "" && i === arr.length - 1)).join("\n") + "\n"
+  fs.writeFileSync(YITH_ENV_PATH, content, { mode: 0o600 })
+  // writeFileSync won't tighten perms if the file already exists with a
+  // looser mode — apply explicitly to cover that case.
+  try {
+    fs.chmodSync(YITH_ENV_PATH, 0o600)
+  } catch {
+    /* non-fatal */
+  }
+  console.log(`  Saved ${envKey} to ${YITH_ENV_PATH} (mode 600)`)
+}
+
+/**
+ * Register the yith-mcp server in settings.json → mcpServers. Idempotent:
+ * if the entry already exists with a matching command, leaves it alone.
+ * Uses an absolute path to bin/yith-mcp.js from the installed package so
+ * Claude Code can spawn it regardless of whether `yith-mcp` is on PATH.
+ */
+function registerYithMcpServer(
+  settings: Record<string, unknown>,
+  packageRoot: string,
+): void {
+  const serverPath = path.join(packageRoot, "bin", "yith-mcp.js")
+  const mcpServers =
+    (settings.mcpServers as Record<string, unknown> | undefined) ?? {}
+
+  const existing = mcpServers[MCP_SERVER_NAME] as
+    | { command?: string; args?: string[]; type?: string }
+    | undefined
+  if (existing?.command === "node" && existing.args?.[0] === serverPath) {
+    console.log(`  MCP server already registered: ${MCP_SERVER_NAME}`)
+  } else {
+    mcpServers[MCP_SERVER_NAME] = {
+      type: "stdio",
+      command: "node",
+      args: [serverPath],
+    }
+    console.log(
+      `  Registered MCP server: ${MCP_SERVER_NAME} → node ${serverPath}`,
+    )
+  }
+  settings.mcpServers = mcpServers
 }
 
 function ask(rl: readline.Interface, question: string): Promise<string> {
@@ -162,6 +345,10 @@ export async function runInstall(options: {
 
   let disabledHooks = new Set<string>()
   let disabledCommands = new Set<string>()
+  let embeddingChoice: {
+    providerId: "local" | "gemini" | "openai" | "voyage"
+    apiKey?: string
+  } = { providerId: "local" }
 
   if (!noTui) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -190,6 +377,8 @@ export async function runInstall(options: {
       disabledCommands = new Set(["all"])
     }
 
+    embeddingChoice = await promptEmbeddingProvider(rl)
+
     rl.close()
     console.log()
   }
@@ -200,10 +389,21 @@ export async function runInstall(options: {
   console.log("► Hooks:")
   installHooks(disabledHooks)
 
+  // Ensure Yith data dir before writing .env or settings
+  console.log("\n► Yith Archive:")
+  ensureYithDataDir()
+  if (embeddingChoice.providerId !== "local" && embeddingChoice.apiKey) {
+    const envKey = EMBEDDING_PROVIDERS.find((p) => p.id === embeddingChoice.providerId)!.envKey
+    writeYithEnvKey(envKey, embeddingChoice.apiKey)
+  } else {
+    console.log("  Embeddings: local nomic (no API key needed)")
+  }
+
   // Update settings.json
   console.log("\n► Settings:")
   const settings = loadSettings()
   registerHooksInSettings(settings, disabledHooks)
+  registerYithMcpServer(settings, packageRoot)
   saveSettings(settings)
   console.log(`  Saved settings to ${SETTINGS_PATH}`)
 
@@ -230,5 +430,11 @@ export async function runInstall(options: {
   console.log("╚══════════════════════════════════════════════════════╝")
   console.log(`\nConfig: ${path.join(CLAUDE_DIR, "oh-my-claudecode.jsonc")}`)
   console.log(`Commands: ${COMMANDS_DIR}`)
+  console.log(`Yith data: ${YITH_DATA_DIR}`)
+  if (embeddingChoice.providerId === "local") {
+    console.log(
+      "\nNote: first Yith session will download the nomic embedding model (~137 MB). One-time.",
+    )
+  }
   console.log("Start a new Claude Code session and type /cthulhu to begin.\n")
 }

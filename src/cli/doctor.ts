@@ -3,12 +3,61 @@ import * as path from "path"
 import { ALL_HOOK_DEFINITIONS } from "../hooks/index.js"
 import { AGENT_METADATA_MAP } from "../agents/builtin-agents.js"
 import { loadPluginConfig } from "../plugin-config.js"
+import {
+  FULL_CATALOG,
+  groupFullCatalog,
+  LLM_REQUIRED_FUNCTIONS,
+} from "../mcp/yith-catalog.js"
 
 const HOME = process.env.HOME ?? process.env.USERPROFILE ?? ""
 const CLAUDE_DIR = path.join(HOME, ".claude")
 const HOOKS_DIR = path.join(CLAUDE_DIR, "hooks")
 const SKILLS_DIR = path.join(CLAUDE_DIR, "skills")
 const SETTINGS_PATH = path.join(CLAUDE_DIR, "settings.json")
+const YITH_DATA_DIR = path.join(HOME, ".oh-my-claudecode", "yith")
+const YITH_ENV_PATH = path.join(YITH_DATA_DIR, ".env")
+const MCP_SERVER_NAME = "yith-archive"
+
+/**
+ * Print the full Yith function catalog grouped by category. Invoked via
+ * `oh-my-claudecode doctor --yith-functions`. Doesn't touch the runtime
+ * archive — just reads from the static catalog module, which is the
+ * single source of truth for what functions exist.
+ */
+export function printYithFunctionCatalog(): void {
+  console.log("\n╔══════════════════════════════════════════════════════╗")
+  console.log("║           Yith Memory Function Catalog               ║")
+  console.log("╚══════════════════════════════════════════════════════╝\n")
+  console.log(
+    `  ${FULL_CATALOG.length} functions available via yith_trigger(name, args)`,
+  )
+  console.log(
+    `  ⚡ = needs an LLM (routes through work-packet loop in no-key mode)\n`,
+  )
+
+  const groups = groupFullCatalog()
+  for (const [category, entries] of groups) {
+    console.log(`  ── ${category} ${"─".repeat(Math.max(2, 50 - category.length))}`)
+    const width = Math.max(...entries.map((e) => e.name.length))
+    for (const entry of entries) {
+      const marker = LLM_REQUIRED_FUNCTIONS.has(entry.name) ? "⚡ " : "  "
+      console.log(`    ${marker}${entry.name.padEnd(width)}  ${entry.summary}`)
+    }
+    console.log()
+  }
+  console.log(
+    "  Note: these are NOT first-class MCP tools. Invoke them via:",
+  )
+  console.log(
+    '    yith_trigger({ name: "mem::consolidate-pipeline", args: {} })\n',
+  )
+  console.log(
+    "  The five core memory operations (remember, search, recall, context,",
+  )
+  console.log(
+    "  observe) are first-class MCP tools prefixed `yith_` — use those directly.\n",
+  )
+}
 
 interface CheckResult {
   name: string
@@ -123,6 +172,108 @@ export async function runDoctor(projectDirectory: string = process.cwd()): Promi
         status: "error",
         message: `Config invalid: ${String(err)}`,
       })
+    }
+  }
+
+  // ── Check 8: Yith data directory ────────────────────────────────────────────
+  const yithDirExists = fs.existsSync(YITH_DATA_DIR)
+  results.push(
+    check(
+      "Yith data dir",
+      yithDirExists,
+      `${YITH_DATA_DIR} exists`,
+      `${YITH_DATA_DIR} not found — run: oh-my-claudecode install`,
+    ),
+  )
+
+  // ── Check 9: Yith MCP server registered ─────────────────────────────────────
+  if (settingsExists) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf-8")) as Record<string, unknown>
+      const mcpServers = settings.mcpServers as Record<string, { command?: string; args?: string[] }> | undefined
+      const yithEntry = mcpServers?.[MCP_SERVER_NAME]
+      if (yithEntry) {
+        const serverCmd = yithEntry.args?.[0] ?? yithEntry.command ?? "(unknown)"
+        results.push({
+          name: "Yith MCP server",
+          status: "ok",
+          message: `Registered → ${path.basename(serverCmd)}`,
+        })
+      } else {
+        results.push({
+          name: "Yith MCP server",
+          status: "error",
+          message: "Not registered in settings.json.mcpServers — run: oh-my-claudecode install",
+        })
+      }
+    } catch {
+      results.push({
+        name: "Yith MCP server",
+        status: "error",
+        message: "Failed to parse settings.json",
+      })
+    }
+  }
+
+  // ── Check 10: Boot Yith archive and report health ──────────────────────────
+  if (yithDirExists) {
+    try {
+      const { createYithArchive } = await import("../features/yith-archive/index.js")
+      const archive = createYithArchive()
+      const memoriesMap = (await archive.kv.get<Record<string, unknown>>("mem:memories", "")) ?? {}
+      // kv.list on the memories scope returns the individual memory records.
+      const memoryCount = (await archive.kv.list("mem:memories")).length
+      const observationCount = (await archive.kv.list("mem:observations")).length
+      void memoriesMap
+
+      // Read meta header to report embedding provider state
+      const meta = await archive.kv
+        .get<{ embeddingProvider: string; dimensions: number; generation: number }>(
+          "mem:index:meta",
+          "current",
+        )
+        .catch(() => null)
+
+      const providerLine = meta
+        ? `${meta.embeddingProvider} (${meta.dimensions} dims, gen ${meta.generation})`
+        : "pending first flush"
+
+      results.push({
+        name: "Yith archive",
+        status: "ok",
+        message: `Loaded — ${memoryCount} memories, ${observationCount} observations, embeddings: ${providerLine}`,
+      })
+
+      await archive.shutdown()
+    } catch (err) {
+      results.push({
+        name: "Yith archive",
+        status: "error",
+        message: `Failed to boot: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
+  }
+
+  // ── Check 11: Yith .env permissions if it exists ────────────────────────────
+  if (fs.existsSync(YITH_ENV_PATH)) {
+    try {
+      const stat = fs.statSync(YITH_ENV_PATH)
+      const mode = stat.mode & 0o777
+      if (mode === 0o600) {
+        results.push({
+          name: "Yith .env perms",
+          status: "ok",
+          message: `${YITH_ENV_PATH} mode 600`,
+        })
+      } else {
+        results.push({
+          name: "Yith .env perms",
+          status: "warn",
+          message: `${YITH_ENV_PATH} mode ${mode.toString(8)} — should be 600`,
+        })
+      }
+    } catch {
+      /* skip */
     }
   }
 

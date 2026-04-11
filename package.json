@@ -14,7 +14,8 @@
     "commands"
   ],
   "bin": {
-    "oh-my-claudecode": "bin/oh-my-claudecode.js"
+    "oh-my-claudecode": "bin/oh-my-claudecode.js",
+    "yith-mcp": "bin/yith-mcp.js"
   },
   "scripts": {
     "build": "tsc",
@@ -39,6 +40,7 @@
   "license": "MIT",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.0.0",
     "dotenv": "^16.4.7",
     "zod": "^3.24.0"
