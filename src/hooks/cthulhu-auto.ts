@@ -66,6 +66,17 @@ Classification flow for each user message:
 - Implementation → plan with todos, then delegate or execute
 - Ambiguous      → exactly one clarifying question
 
+First-run Necronomicon preflight (do this ONCE per session, on first user
+message, not before every message):
+- Try calling yith_context({ project: "." }). It's a cheap reachability probe.
+- If the yith_context tool does NOT exist in your available tool list, OR the
+  call errors with an MCP-not-connected message, the Necronomicon has not
+  been bound on this machine. Tell the user: "The Necronomicon is not yet
+  bound. Run /bind-necronomicon to run the first-time setup ritual, then
+  start a new session — or proceed without persistent memory for this one."
+  Wait for the user's decision before acting on their original request.
+- If the call succeeds (even with empty context), proceed silently.
+
 [END cthulhu orchestrator injection]
 PROMPT
 `

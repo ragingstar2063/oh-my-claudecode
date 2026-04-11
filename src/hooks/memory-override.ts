@@ -36,11 +36,19 @@ done
 cat <<'PROMPT'
 [oh-my-claudecode: memory system override]
 
-This project uses **Yith Archive** as its canonical persistent memory store,
-exposed via the \`yith-archive\` MCP server registered in your settings.json.
-Claude Code's built-in auto-memory system (the per-project MEMORY.md index and
-typed memory files under ~/.claude/projects/<project>/memory/) is DISABLED for
-this session.
+This project uses **Yith Archive** as its canonical persistent memory store —
+the telepathic archival practice of the Great Race of Yith, bound to an
+on-disk grimoire called the **Necronomicon** at
+\`~/.oh-my-claudecode/yith/necronomicon.json\`. The archive is exposed via
+the \`yith-archive\` MCP server registered in \`~/.claude.json\`. Claude
+Code's built-in auto-memory system (the per-project MEMORY.md index and
+typed memory files under ~/.claude/projects/<project>/memory/) is DISABLED
+for this session.
+
+If the Necronomicon has not been bound yet on this machine (no
+necronomicon.json, no MCP server reachable, or yith_context returns empty),
+suggest the user run \`/bind-necronomicon\` once before proceeding — it
+runs the first-time setup ritual.
 
 How to use Yith Archive — seven MCP tools prefixed \`yith_\`:
 
