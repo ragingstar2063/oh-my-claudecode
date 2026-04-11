@@ -1,106 +1,69 @@
 ---
-name: bind-necronomicon
-description: First-run setup ritual for Yith Archive. Verifies the MCP server is reachable, warms up the embedding model, and offers to backfill past Claude Code sessions into the Necronomicon. Safe to run multiple times — it detects what's already done.
+name: necronomicon-bind
+description: Start, continue, or resume the Necronomicon binding ritual. Thin wrapper that shells out to `oh-my-claudecode bind` (real progress bars, state-machine resumption, all-projects ingestion) and then offers to drain any pending compression via the work-packet loop using this session's own LLM.
 ---
 
-You are performing the binding ritual for the **Necronomicon** — the on-disk grimoire that the Great Race of Yith maintains for this machine. The Necronomicon is the physical JSON file at `~/.oh-my-claudecode/yith/necronomicon.json`; Yith Archive is the archival practice that writes to and reads from it. Both names refer to the same system, viewed through different lenses.
+You are invoking the **Necronomicon Binding Ritual**. The ritual has two halves that must work together:
 
-Run the ritual in phases. For each phase, print a header line, run the check, and report the outcome with a status glyph (`✓`, `⚠`, `✗`, or `…`) and a short explanation. Do NOT proceed to the next phase until the current one is resolved.
+1. **The fast half** (no LLM) — download the embedding model, scan every past Claude Code transcript across every project on this machine, import opencode history, migrate `.sisyphus/` dirs, seed preliminary memories from project code. This runs as a **real Node process** in the user's terminal with an ANSI TUI showing actual download progress bars and per-phase status. It must run OUTSIDE this Claude Code session.
 
-## Phase I — The Tome Exists
+2. **The slow half** (LLM-dependent) — compress the thousands of raw observations the fast half ingested into searchable memories. This runs **inside this session** via the work-packet protocol, using the session's own subscription auth. Each round is one `yith_trigger → yith_commit_work` loop iteration.
 
-Check whether the Necronomicon has been bound on this machine.
+## Why not do everything from this slash command?
 
-1. Use the `yith_context` MCP tool with a placeholder project like `{ project: "." }`. This is a lightweight call that exercises the MCP server without writing anything.
-2. If the tool returns successfully (even with empty context), the server is reachable → `✓ Necronomicon is bound and the Great Race answers.`
-3. If the MCP tool is not available at all (the `yith_trigger`/`yith_context` tools don't appear in your tool list), the MCP server is not registered. Tell the user to run `oh-my-claudecode install` in their terminal, then start a NEW Claude Code session and re-run `/bind-necronomicon`. Stop here.
-4. If the tool is available but errors out, report the error verbatim and stop.
+Previous versions of this ritual were prompt-only — they asked Claude to call `yith_remember` / `yith_trigger` inline from this slash command. That design was unreliable: Claude would skip steps, print cosmetic ✓ marks without actually invoking the tools, and the user would see "bound in 5 seconds" with an empty Necronomicon. **Do not try to recreate that approach.** The fast half MUST run as a real CLI, and this command's job is to drive it and then handle the compression half.
 
-## Phase II — The Embedding Sigil
+## Phase 1 — Delegate to the CLI
 
-If this is a fresh install, the local nomic embedding model (~137 MB) has not been downloaded yet. The first memory write or search triggers the download. We'll warm it up explicitly now so the first real use is fast.
+Do this BEFORE anything else:
 
-1. Call `yith_remember` with a harmless sentinel memory:
+1. Tell the user: "Running `oh-my-claudecode bind` in your terminal. This downloads the embedding model (~137 MB, one-time), scans every past Claude Code transcript, imports opencode data, migrates sisyphus directories, and seeds preliminary memories from project code. It's resumable — if it errors mid-run, re-running this command picks up where it stopped."
+
+2. Run via `Bash`:
+   ```bash
+   oh-my-claudecode bind
    ```
-   yith_remember({
-     content: "Necronomicon binding sentinel — written during /bind-necronomicon ritual",
-     type: "reference",
-     concepts: ["bind-necronomicon", "sentinel"]
-   })
+   Stream the output to the user as it arrives. The CLI already produces its own TUI (section headers, progress bars, status glyphs) so you should forward the output verbatim without adding your own commentary.
+
+3. When `oh-my-claudecode bind` exits, inspect its final lines. If the CLI reports "Ritual elapsed: Xs" and a green ✓, the fast half succeeded. If it reports a red ✗ with an error, surface that to the user and stop — re-running this command will retry the failed phase automatically from the state machine cursor.
+
+## Phase 2 — Drain pending compression via the work-packet loop
+
+The CLI's last line tells you how many raw observations are pending compression. That's the input to this half.
+
+1. Call `yith_trigger({ name: "mem::compress-batch-step", args: { limit: 100 } })`. Expect a `needs_llm_work` envelope with one or more `workPackets` and a `continuation` token.
+
+2. For each packet in the envelope: read `systemPrompt` + `userPrompt`, reason about them inline (you ARE the LLM for Yith — just produce the compression XML the system prompt asks for), and collect the results.
+
+3. Call `yith_commit_work({ continuation, packetResults: [{id, completion}, ...] })`. The response is either terminal (`{status: "success"}`) or another `needs_llm_work` for the next batch.
+
+4. Between rounds, render a monospace ASCII progress bar so the user sees forward motion:
    ```
-2. The response may take 30-90 seconds on first call because the nomic model downloads in the background. While you wait, print a progress indicator to the user:
+   [▓▓▓▓▓▓░░░░░░░░░░░░░░] 34%  —  171/500 raw observations compressed
    ```
-   ▓▓▓▓▓▓▓▓▓░░░░░░░░ warming up the embedding sigil...
-   ```
-   (Only one frame — you cannot actually animate in a Claude Code session. The single bar communicates "work is happening, this is the expected delay.")
-3. If the call succeeds → `✓ The embedding sigil pulses. Model is cached under ~/.cache/huggingface/.`
-4. If the call fails with a network error, tell the user the nomic download needs internet and offer to skip this phase (BM25-only mode still works). Continue.
-5. If the call fails with a parse or validation error, report it and stop.
+   Re-print the bar each round with updated numbers. (The Claude Code chat UI won't animate in place, but a re-printed bar per tool call shows clear progress.)
 
-## Phase III — Searching the Tome
+5. Loop until terminal. Each round's `limit` can be 50-100 — adjust based on how large the prompts are. If a round takes more than ~2 minutes, drop the limit for the next one.
 
-Verify hybrid search actually returns the sentinel memory we just wrote.
+## Phase 3 — Seal the ritual
 
-1. Call `yith_search({ query: "Necronomicon binding sentinel", limit: 5 })`.
-2. If the result contains at least one hit referencing the sentinel → `✓ Hybrid search is operational (BM25 + vector index in sync).`
-3. If zero hits but the sentinel is definitely in KV (you can verify with `yith_trigger({ name: "mem::diagnose", args: {} })`), the index is out of sync. Call `yith_trigger({ name: "mem::rebuild-index", args: {} })` if such a function exists, or tell the user to restart their Claude Code session (the MCP server rebuilds the index on boot). Continue.
+Final output:
 
-## Phase IV — Past Sessions (Optional)
+```
+═══════════════════════════════════════════════════════
+  The Necronomicon is bound.
+═══════════════════════════════════════════════════════
+  Tome:              ~/.oh-my-claudecode/yith/necronomicon.json
+  MCP server:        yith-archive (via ~/.claude.json)
+  Embedding:         local:nomic-embed-text-v1.5 (768 dims)
+  Observations:      <total from mem::diagnose>
+  Compressed:        <total - pending>
+  Pending:           <remaining count>
+═══════════════════════════════════════════════════════
+```
 
-The user may have Claude Code transcripts from past sessions on this machine, in `~/.claude/projects/<sanitized-cwd>/*.jsonl`. Offer to backfill them into the Necronomicon so the archive has history from before it existed.
+If there are still pending observations (either because `limit` capped the batch or because the user interrupted), tell them exactly how many and that running `/necronomicon-bind` again resumes from where it stopped.
 
-1. Ask the user: "Would you like to backfill past Claude Code sessions into the Necronomicon? This reads your historical `~/.claude/projects/` transcripts and converts user prompts + assistant responses + tool calls into observations that get compressed and made searchable. (yes / skip / specific-project-path)"
-2. If the user says `skip`, note it and move on.
-3. If they say `yes` or provide a path, run:
-   ```
-   yith_trigger({
-     name: "mem::backfill-sessions",
-     args: {
-       projectCwd: <path or "." for cwd>,
-       dryRun: false,
-       maxObservations: 500
-     }
-   })
-   ```
-4. The backfill runs through the work-packet loop. Each compression round will return a `needs_llm_work` envelope with one or more packets. For each round:
-   - Run the packets' prompts through your own reasoning (inline — the systemPrompt + userPrompt describe a compression task, you act as the LLM for Yith).
-   - Commit the completions via `yith_commit_work({ continuation, packetResults: [...] })`.
-   - Loop until the response is terminal.
-5. Between rounds, render a progress bar using monospace ASCII:
-   ```
-   [▓▓▓▓▓▓░░░░░░░░░░░░] 34% — 171/500 observations compressed
-   ```
-   Update the numbers in each round's status message. Users can't get an animated bar, but a re-printed bar in each tool call shows forward motion.
-6. Report the final counts from the backfill terminal result.
+## Unattended mode
 
-## Phase V — Sealing the Ritual
-
-1. Print a summary of what was done:
-   ```
-   ═════════════════════════════════════════════════════
-     The Necronomicon is bound.
-   ═════════════════════════════════════════════════════
-     Tome:             ~/.oh-my-claudecode/yith/necronomicon.json
-     MCP server:       yith-archive (reachable)
-     Embedding model:  local:nomic-embed-text-v1.5 (768 dims)
-     Memories:         <count from yith_trigger mem::diagnose>
-     Observations:     <count from yith_trigger mem::diagnose>
-     Backfill:         <yes/skipped + counts>
-   ═════════════════════════════════════════════════════
-     The Great Race of Yith now remembers this machine.
-     Every new Claude Code session will have access to
-     the Necronomicon through yith_search, yith_remember,
-     yith_context, and the other MCP tools.
-   ```
-2. If any phase reported a warning, restate the warnings at the end so the user doesn't miss them.
-
-## Re-entry
-
-This command is idempotent. Running it twice in a row:
-- Phase I passes immediately (MCP reachable)
-- Phase II is a no-op if the embedding model is already cached (the call returns fast)
-- Phase III passes immediately
-- Phase IV offers to backfill again (the user can skip if they already did it)
-- Phase V prints the final summary
-
-Run it any time you want to verify the Necronomicon is still bound.
+Mention once at the end: if the user wants this to happen in the background without opening a session, they can run `oh-my-claudecode bind --install-cron [--interval 1h]` once, and a cron entry will run `oh-my-claudecode bind --resume` on the interval. That form uses `claude -p` (Claude Code's non-interactive mode) to drive the compression half, so nothing needs to be open.

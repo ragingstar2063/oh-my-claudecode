@@ -121,6 +121,7 @@ export const HookNameSchema = z.enum([
   "rules-injector",           // Inject .elder-gods/rules/*.md
   "cthulhu-auto",             // Auto-activate Cthulhu when .elder-gods/ is present
   "memory-override",          // Redirect persistent memory to Yith Archive
+  "yith-capture",             // Continuous Yith ingestion — fires on Stop
 ])
 
 export type HookName = z.infer<typeof HookNameSchema>

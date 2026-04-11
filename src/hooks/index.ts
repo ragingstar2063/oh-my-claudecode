@@ -7,6 +7,7 @@ export { RULES_INJECTOR_HOOK_SCRIPT, getRulesInjectorHookConfig } from "./rules-
 export { WRITE_GUARD_HOOK_SCRIPT, getWriteGuardHookConfig } from "./write-guard.js"
 export { CTHULHU_AUTO_HOOK_SCRIPT, getCthulhuAutoHookConfig } from "./cthulhu-auto.js"
 export { MEMORY_OVERRIDE_HOOK_SCRIPT, getMemoryOverrideHookConfig } from "./memory-override.js"
+export { YITH_CAPTURE_HOOK_SCRIPT, getYithCaptureHookConfig } from "./yith-capture.js"
 
 export interface HookDefinition {
   name: HookName
@@ -44,6 +45,10 @@ import {
   MEMORY_OVERRIDE_HOOK_SCRIPT,
   getMemoryOverrideHookConfig,
 } from "./memory-override.js"
+import {
+  YITH_CAPTURE_HOOK_SCRIPT,
+  getYithCaptureHookConfig,
+} from "./yith-capture.js"
 
 /** All hook definitions for the plugin */
 export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
@@ -95,6 +100,13 @@ export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
     scriptPath: "~/.claude/hooks/memory-override.sh",
     scriptContent: MEMORY_OVERRIDE_HOOK_SCRIPT,
     config: getMemoryOverrideHookConfig(),
+  },
+  {
+    name: "yith-capture",
+    event: "Stop",
+    scriptPath: "~/.claude/hooks/yith-capture.sh",
+    scriptContent: YITH_CAPTURE_HOOK_SCRIPT,
+    config: getYithCaptureHookConfig(),
   },
 ]
 
