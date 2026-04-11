@@ -61,7 +61,7 @@ These aren't three plugins you pick and choose. They're one integrated system th
 | **Work-packet protocol** | LLM-requiring memory ops (consolidate, summarize, reflect, etc.) run in sessions with no API key — each function has a state-machine variant that emits prompts for the parent agent to execute with its own subscription auth. |
 | **Block Summarizer** | In-session delegation summarization with on-disk block archive |
 | **8 lifecycle hooks** | Auto-activation, memory redirect, todo enforcement, completion loops, code-quality checks, rule injection, write guards |
-| **9 slash commands** | Direct-invoke any mode or flow from the Claude Code chat bar |
+| **10 slash commands** | Direct-invoke any mode or flow from the Claude Code chat bar |
 | **Intent gate** | Every user message is classified and routed before Cthulhu acts |
 | **Work plan system** | Multi-step planning flow with interview → scope → plan → review before execution |
 | **3-level config** | Defaults → user (`~/.claude/oh-my-claudecode.jsonc`) → project (`.claude/...`) with Zod validation and partial parsing |
@@ -140,7 +140,7 @@ Named for the Great Race of Yith from *The Shadow Out of Time* — mind-transfer
 - **Exposed as an MCP server** — during `install`, Yith Archive is registered with Claude Code as a stdio MCP server named `yith-archive`. Sessions get 7 tools: `yith_remember`, `yith_search`, `yith_recall`, `yith_context`, `yith_observe`, `yith_commit_work`, and `yith_trigger` (escape hatch for ~90 advanced memory functions, with a curated top-20 catalog embedded in the tool description).
 - **Rich memory primitives** — `remember`, `search`, `recall`, `context`, `observe`, plus dozens more under the hood: consolidation pipelines, temporal graph retrieval, lesson crystallization, pattern extraction, eviction and retention policies, file-scoped memory index, sliding window compression, query expansion, working memory, session timeline, export/import.
 - **Automatic capture** — notable events during a session can be observed into the archive; a background consolidation pass merges similar memories into distilled lessons.
-- **Zero external runtime** — file-backed JSON storage under `~/.oh-my-claudecode/yith/store.json`. Atomic writes via tmpfile + rename so a crash mid-write can't corrupt the store. No database, no background server, no subprocess, no network, no ports to manage.
+- **Zero external runtime** — file-backed JSON storage at `~/.oh-my-claudecode/yith/necronomicon.json` (legacy installs are auto-migrated from `store.json` on boot). Atomic writes via tmpfile + rename so a crash mid-write can't corrupt the tome. No database, no background server, no subprocess, no network, no ports to manage. The MCP server itself is registered user-level in `~/.claude.json`.
 - **Crash-safe work-packet flows** — pending continuations for LLM-requiring operations persist to the same store and survive server restarts; resuming with the same continuation token picks up where the flow left off.
 - **Replaces Claude Code's built-in auto-memory** via the `memory-override` SessionStart hook, which tells the session not to write to the built-in memory files. Disable the override with `disabled_hooks: ["memory-override"]` if you prefer to keep the built-in system active.
 
@@ -233,6 +233,7 @@ After installation these are available in Claude Code sessions:
 | Command | Description |
 |---------|-------------|
 | `/cthulhu` | Activate Cthulhu orchestrator mode (also creates `.elder-gods/` on first use) |
+| `/bind-necronomicon` | First-time Yith Archive setup ritual — tome check, embedding warmup, search verify, optional session backfill |
 | `/shoggoth` | Fast parallel codebase search |
 | `/yog-sothoth` | Consult the architecture/debug advisor |
 | `/elder-loop` | Start the self-referential completion loop |

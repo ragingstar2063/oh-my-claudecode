@@ -5,6 +5,66 @@ All notable changes to oh-my-claudecode are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-04-11
+
+### Fixed
+
+- **MCP server registration landed in the wrong file.** Earlier
+  installs wrote `mcpServers.yith-archive` to
+  `~/.claude/settings.json`, but Claude Code reads user-level MCP
+  servers from the top-level `mcpServers` map in `~/.claude.json`
+  (a separate file that holds onboarding state, per-project trust,
+  cached growthbook features, etc.). The installer now writes to
+  `~/.claude.json` with atomic tmpfile+rename, preserves all existing
+  user state, and takes a timestamped backup. `doctor` also queries
+  the correct location and warns if it finds a stale entry in the
+  old one. Existing broken installs self-heal by re-running
+  `oh-my-claudecode install`.
+
+### Added
+
+- **Necronomicon dual-naming.** Yith Archive's on-disk file renamed
+  from `store.json` to `necronomicon.json`. Existing installs are
+  automatically migrated on boot via an atomic rename — if the new
+  name doesn't exist but the old one does, it gets renamed in place.
+  Code-level API (types, function IDs, module paths) is unchanged.
+  The user-facing flavor treats Yith as the archival practice of the
+  Great Race and the Necronomicon as the physical grimoire they bind
+  to this machine.
+- **`/bind-necronomicon` slash command.** First-time setup ritual
+  with five phases: tome reachability check, embedding sigil warmup
+  (caches the local nomic model), hybrid search verification,
+  optional session history backfill, and a sealing summary.
+  Idempotent — safe to run any number of times to verify state.
+- **First-run preflight in `/cthulhu` and `cthulhu-auto`.** When
+  Cthulhu activates, it runs a one-shot `yith_context` probe. If the
+  MCP server isn't reachable, it tells the user to run
+  `/bind-necronomicon` first and waits for their decision before
+  acting on the original request.
+- **`mem::backfill-sessions` — Claude Code transcript ingestion.**
+  Reads past session transcripts from
+  `~/.claude/projects/<sanitized-cwd>/*.jsonl`, maps each meaningful
+  line (user prompts, assistant text, assistant tool calls) into a
+  `RawObservation`, and persists them to Yith's KV. Idempotent via
+  stable `sess:<sessionId>:<uuid>[:slot]` IDs and per-session cursors
+  in `KV.backfillCursors`. Args: `projectCwd`, `sessionId`, `dryRun`,
+  `includeSystem`, `includeToolResults`, `maxObservations` (default
+  500 cap). The function writes raw observations only — compression
+  runs separately through the work-packet loop so callers can pace
+  LLM budget independently of ingestion speed.
+- **ASCII progress bars for tool-call loops.** Backfill's terminal
+  result includes a `progressBar` field rendered as a 20-cell
+  monospace bar (`[▓▓▓▓▓░░░░░░░░░░░░] 47% — 171/500 observations
+  created`). The `/bind-necronomicon` command documents re-printing
+  the bar across successive `yith_commit_work` rounds so the parent
+  session's chat shows forward motion during long compression flows.
+
+### Changed
+
+- `memory-override` SessionStart hook prompt rewritten to introduce
+  the Yith/Necronomicon dual-naming and instruct the user to run
+  `/bind-necronomicon` if the tome isn't bound yet.
+
 ## [0.2.0] — 2026-04-11
 
 ### Added
