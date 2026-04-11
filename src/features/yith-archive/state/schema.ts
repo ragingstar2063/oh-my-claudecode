@@ -42,6 +42,14 @@ export const KV = {
   retentionScores: "mem:retention",
   indexMeta: "mem:index:meta",
   workPackets: "mem:work-packets",
+  /** Per-session backfill cursors. Key = `${projectCwd}|${transcriptSessionId}`,
+   *  value = `{ lastUuid, updatedAt }`. Used by mem::backfill-sessions to
+   *  pick up where the last run left off so re-running the ritual only
+   *  scans new transcript lines since the last pass. */
+  backfillCursors: "mem:backfill:cursors",
+  /** History of backfill runs for debugging / auditing. Key = runId,
+   *  value = `{ startedAt, completedAt, projectCwd, stats, errors }`. */
+  backfillRuns: "mem:backfill:runs",
 } as const;
 
 export const STREAM = {

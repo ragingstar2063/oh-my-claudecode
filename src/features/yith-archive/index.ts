@@ -12,7 +12,7 @@
 
 import { join } from "node:path"
 import { homedir } from "node:os"
-import { existsSync, mkdirSync } from "node:fs"
+import { existsSync, mkdirSync, renameSync } from "node:fs"
 
 import {
   loadConfig,
@@ -79,6 +79,7 @@ import {
   registerConsolidationPipelineFunction,
   registerConsolidationPipelineStepFunction,
 } from "./functions/consolidation-pipeline.js"
+import { registerBackfillFunction } from "./functions/backfill.js"
 import { registerSnapshotFunction } from "./functions/snapshot.js"
 import { registerActionsFunction } from "./functions/actions.js"
 import { registerFrontierFunction } from "./functions/frontier.js"
@@ -242,7 +243,31 @@ export function createYithArchive(
   }
 
   const sdk = createFakeSdk()
-  const kv = new YithKV(join(dataDir, "store.json"))
+  // The archive's canonical on-disk file is `necronomicon.json` —
+  // the Mad Arab's tome that the Great Race of Yith maintains. Older
+  // installs wrote to `store.json`; if we find one without a
+  // necronomicon.json sibling we transparently migrate it on boot
+  // (rename + re-read) so users who upgrade in-place don't lose data.
+  const necronomiconPath = join(dataDir, "necronomicon.json")
+  const legacyStorePath = join(dataDir, "store.json")
+  if (!existsSync(necronomiconPath) && existsSync(legacyStorePath)) {
+    try {
+      // Atomic migration: rename so concurrent readers never see both.
+      // If the rename fails (permissions, cross-device), fall back to
+      // reading store.json directly — we don't want to block startup.
+      renameSync(legacyStorePath, necronomiconPath)
+      logger.info(
+        `Migrated legacy store.json → necronomicon.json in ${dataDir}`,
+      )
+    } catch (err) {
+      logger.warn(
+        `Legacy store.json migration failed — reading from store.json: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+  const kv = new YithKV(
+    existsSync(necronomiconPath) ? necronomiconPath : legacyStorePath,
+  )
   const metricsStore = new MetricsStore(kv)
   const dedupMap = new DedupMap()
   const vectorIndex = embeddingProvider ? new VectorIndex() : null
@@ -281,6 +306,7 @@ export function createYithArchive(
 
   registerConsolidationPipelineFunction(sdk, kv, provider)
   registerConsolidationPipelineStepFunction(sdk, kv)
+  registerBackfillFunction(sdk, kv)
   registerActionsFunction(sdk, kv)
   registerFrontierFunction(sdk, kv)
   registerLeasesFunction(sdk, kv)

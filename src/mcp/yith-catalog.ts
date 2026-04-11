@@ -168,6 +168,11 @@ export const CORE_CATALOG: readonly CatalogEntry[] = [
     category: "diagnostics",
   },
   {
+    name: "mem::backfill-sessions",
+    summary: "ingest past Claude Code transcripts as raw observations",
+    category: "migration",
+  },
+  {
     name: "mem::enrich-session",
     summary: "enrich an entire session's observations",
     category: "summarization",
@@ -323,6 +328,7 @@ export const FULL_CATALOG: readonly CatalogEntry[] = [
   { name: "mem::migrate", summary: "migrate archive schema versions", category: "migration" },
   { name: "mem::export", summary: "export archive as portable JSON", category: "migration" },
   { name: "mem::import", summary: "import archive from JSON", category: "migration" },
+  { name: "mem::backfill-sessions", summary: "ingest past Claude Code transcripts as raw observations", category: "migration" },
 
   // Privacy
   { name: "mem::privacy", summary: "apply privacy rules to memories", category: "privacy" },
