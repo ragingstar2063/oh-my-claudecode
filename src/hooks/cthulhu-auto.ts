@@ -28,6 +28,41 @@ done
 
 [ -z "\$found" ] && exit 0
 
+# --- Necronomicon preflight ---
+# Extract bindState + pending-compression count from the user's
+# necronomicon.json (Yith Archive's on-disk file). The flags drive
+# the preflight text block the hook injects below.
+NECRONOMICON="\${HOME}/.oh-my-claudecode/yith/necronomicon.json"
+BIND_EXISTS="false"
+ALL_COMPLETE="false"
+PENDING_COUNT="0"
+FAILED_PHASES=""
+PENDING_PHASES=""
+if [ -f "\$NECRONOMICON" ] && command -v jq >/dev/null 2>&1; then
+  if jq -e '."mem:bind-state".current' "\$NECRONOMICON" >/dev/null 2>&1; then
+    BIND_EXISTS="true"
+    ALL_COMPLETE=\$(jq -r '
+      [."mem:bind-state".current.phases | to_entries[] | .value.status]
+      | all(. == "completed")
+    ' "\$NECRONOMICON" 2>/dev/null || echo "false")
+    FAILED_PHASES=\$(jq -r '
+      [."mem:bind-state".current.phases
+        | to_entries[]
+        | select(.value.status == "failed")
+        | .key] | join(",")
+    ' "\$NECRONOMICON" 2>/dev/null || echo "")
+    PENDING_PHASES=\$(jq -r '
+      [."mem:bind-state".current.phases
+        | to_entries[]
+        | select(.value.status == "pending" or .value.status == "in_progress")
+        | .key] | join(",")
+    ' "\$NECRONOMICON" 2>/dev/null || echo "")
+  fi
+  PENDING_COUNT=\$(jq -r '
+    ."mem:pending-compression".state.count // 0
+  ' "\$NECRONOMICON" 2>/dev/null || echo "0")
+fi
+
 cat <<'PROMPT'
 [oh-my-claudecode: Cthulhu orchestrator auto-activated — .elder-gods/ detected]
 
@@ -66,19 +101,48 @@ Classification flow for each user message:
 - Implementation → plan with todos, then delegate or execute
 - Ambiguous      → exactly one clarifying question
 
-First-run Necronomicon preflight (do this ONCE per session, on first user
-message, not before every message):
-- Try calling yith_context({ project: "." }). It's a cheap reachability probe.
-- If the yith_context tool does NOT exist in your available tool list, OR the
-  call errors with an MCP-not-connected message, the Necronomicon has not
-  been bound on this machine. Tell the user: "The Necronomicon is not yet
-  bound. Run /bind-necronomicon to run the first-time setup ritual, then
-  start a new session — or proceed without persistent memory for this one."
-  Wait for the user's decision before acting on their original request.
-- If the call succeeds (even with empty context), proceed silently.
-
 [END cthulhu orchestrator injection]
 PROMPT
+
+# --- Dynamic Necronomicon preflight ---
+# Emit a tailored preflight block based on the bindState flags we
+# extracted above. The text here drives Cthulhu's first-user-message
+# behavior: hard-block on unbound Necronomicon, nag on failures,
+# offer to drain pending compression when the queue is non-empty.
+echo
+echo "[Necronomicon preflight]"
+if [ "\$BIND_EXISTS" = "false" ]; then
+  echo
+  echo "The Necronomicon has not been bound on this machine yet. The Yith"
+  echo "Archive is empty and no past Claude Code sessions have been ingested."
+  echo
+  echo "**Action required**: tell the user to run \\\`oh-my-claudecode bind\\\`"
+  echo "in their terminal OR \\\`/necronomicon-bind\\\` inside this session"
+  echo "before proceeding with any memory-dependent work."
+elif [ -n "\$FAILED_PHASES" ]; then
+  echo
+  echo "The binding ritual has failed phases: \$FAILED_PHASES"
+  echo "Re-run \\\`/necronomicon-bind\\\` (or \\\`oh-my-claudecode bind --resume\\\`"
+  echo "in a terminal) to retry from the failed phase — the state machine"
+  echo "resumes automatically without redoing completed work."
+elif [ "\$ALL_COMPLETE" != "true" ]; then
+  echo
+  echo "The Necronomicon is partially bound. Pending phases: \$PENDING_PHASES"
+  echo "Run \\\`/necronomicon-bind\\\` to continue the ritual from where it stopped."
+elif [ "\$PENDING_COUNT" != "0" ]; then
+  echo
+  echo "✓ Necronomicon bound. \$PENDING_COUNT raw observations are queued for"
+  echo "compression into searchable memories."
+  echo
+  echo "**Offer the user**: \"Process pending compression now (runs via the"
+  echo "work-packet loop using this session's LLM)? It takes one commit round"
+  echo "per batch.\" If they accept, call yith_trigger with"
+  echo "mem::compress-batch-step and drive the needs_llm_work -> yith_commit_work"
+  echo "loop until terminal. Render an ASCII progress bar per round."
+else
+  echo
+  echo "✓ Necronomicon is bound and every phase is complete. Nothing pending."
+fi
 `
 
 export function getCthulhuAutoHookConfig(): object {

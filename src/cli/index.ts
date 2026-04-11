@@ -1,8 +1,17 @@
 import { Command } from "commander"
 import * as path from "path"
 import { fileURLToPath } from "url"
+import { execFileSync } from "node:child_process"
 import { runInstall } from "./install.js"
 import { runDoctor, printYithFunctionCatalog } from "./doctor.js"
+import { runBind } from "./bind.js"
+import {
+  buildClaudePSpawnCommand,
+  buildCrontabLine,
+  installCrontabEntry,
+  parseIntervalSpec,
+} from "./bind-cron.js"
+import { TuiWriter } from "./tui.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -62,6 +71,87 @@ program
       console.log(`  ${row.alias.padEnd(20)} ${row.name.padEnd(20)} ${row.model.padEnd(25)} [${row.cost}]`)
     }
     console.log()
+  })
+
+program
+  .command("bind")
+  .description(
+    "Run the Necronomicon binding ritual — download embedding model, " +
+      "ingest past transcripts, import opencode history, migrate sisyphus " +
+      "dirs, seed preliminary memories. Resumable.",
+  )
+  .option("--resume", "Cron-friendly: run only pending work and exit")
+  .option(
+    "--install-cron",
+    "Install a system crontab entry that runs `bind --resume` on an interval",
+  )
+  .option(
+    "--interval <spec>",
+    "Interval for the cron entry (e.g. 1h, 30m, 1d). Used with --install-cron.",
+    "1h",
+  )
+  .option("--force <phase>", "Re-run a specific phase even if already completed")
+  .action(async (options: {
+    resume?: boolean
+    installCron?: boolean
+    interval?: string
+    force?: string
+  }) => {
+    if (options.installCron) {
+      // Install the crontab entry that runs `bind --resume`.
+      const schedule = parseIntervalSpec(options.interval ?? "1h")
+      const binCmd = process.argv[1] ?? "oh-my-claudecode"
+      const crontabBody = buildCrontabLine({
+        schedule,
+        command: `${binCmd} bind --resume`,
+      })
+      let current = ""
+      try {
+        current = execFileSync("crontab", ["-l"], {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        })
+      } catch {
+        current = ""
+      }
+      const updated = installCrontabEntry(current, crontabBody)
+      execFileSync("crontab", ["-"], { input: updated })
+      console.log(
+        `Installed crontab entry on schedule '${schedule}'. The cron ` +
+          `tick will run \`${binCmd} bind --resume\` to ingest new data ` +
+          `and drive compression via \`claude -p\`.`,
+      )
+      console.log(`Spawn command preview:\n  ${buildClaudePSpawnCommand({})}`)
+      return
+    }
+
+    const { createYithArchive } = await import(
+      "../features/yith-archive/index.js"
+    )
+    const archive = createYithArchive()
+    const tui = new TuiWriter({
+      write: (s: string) => process.stdout.write(s),
+      isTTY: process.stdout.isTTY ?? false,
+    })
+    try {
+      await runBind({
+        archive,
+        tui,
+        force: options.force
+          ? [
+              options.force as
+                | "embedding_download"
+                | "claude_transcripts"
+                | "opencode_import"
+                | "sisyphus_migrate"
+                | "preliminary_seed"
+                | "pending_compression_trigger",
+            ]
+          : undefined,
+      })
+    } finally {
+      await archive.shutdown()
+    }
   })
 
 program.parse()
