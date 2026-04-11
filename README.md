@@ -57,7 +57,8 @@ These aren't three plugins you pick and choose. They're one integrated system th
 | Capability | What it does |
 |---|---|
 | **11 Elder God agents** | Cthulhu orchestrator + 10 specialists (search, advisory, planning, review, docs, autonomy, vision, etc.) |
-| **Yith Archive** | Persistent cross-session memory with retrieval-based injection. Dozens of memory primitives: remember, search, consolidate, evict, crystallize, reflect, temporal graph, pattern extraction, and more. |
+| **Yith Archive** | Persistent cross-session memory with retrieval-based injection. Dozens of memory primitives: remember, search, consolidate, evict, crystallize, reflect, temporal graph, pattern extraction, and more. Exposed to Claude Code as a stdio MCP server with 7 tools. |
+| **Work-packet protocol** | LLM-requiring memory ops (consolidate, summarize, reflect, etc.) run in sessions with no API key — each function has a state-machine variant that emits prompts for the parent agent to execute with its own subscription auth. |
 | **Block Summarizer** | In-session delegation summarization with on-disk block archive |
 | **8 lifecycle hooks** | Auto-activation, memory redirect, todo enforcement, completion loops, code-quality checks, rule injection, write guards |
 | **9 slash commands** | Direct-invoke any mode or flow from the Claude Code chat bar |
@@ -135,11 +136,33 @@ Named for the Great Race of Yith from *The Shadow Out of Time* — mind-transfer
 
 ### What it gives you
 
-- **Hybrid retrieval** — BM25 keyword search combined with optional semantic embedding search (via `@xenova/transformers`) and a graph retrieval weight. Only the most relevant memories get injected into new sessions, not everything.
+- **Hybrid retrieval** — BM25 keyword search combined with semantic embedding search (local nomic model by default, 768 dims, lazy-downloaded on first use) and a graph retrieval weight. Memories AND observations both land in the same index at write-time, so `yith_search` returns freshly-written memories immediately.
+- **Exposed as an MCP server** — during `install`, Yith Archive is registered with Claude Code as a stdio MCP server named `yith-archive`. Sessions get 7 tools: `yith_remember`, `yith_search`, `yith_recall`, `yith_context`, `yith_observe`, `yith_commit_work`, and `yith_trigger` (escape hatch for ~90 advanced memory functions, with a curated top-20 catalog embedded in the tool description).
 - **Rich memory primitives** — `remember`, `search`, `recall`, `context`, `observe`, plus dozens more under the hood: consolidation pipelines, temporal graph retrieval, lesson crystallization, pattern extraction, eviction and retention policies, file-scoped memory index, sliding window compression, query expansion, working memory, session timeline, export/import.
 - **Automatic capture** — notable events during a session can be observed into the archive; a background consolidation pass merges similar memories into distilled lessons.
-- **Zero external runtime** — file-backed JSON storage under `~/.oh-my-claudecode/yith/store.json`. No database, no background server, no subprocess, no network, no ports to manage.
+- **Zero external runtime** — file-backed JSON storage under `~/.oh-my-claudecode/yith/store.json`. Atomic writes via tmpfile + rename so a crash mid-write can't corrupt the store. No database, no background server, no subprocess, no network, no ports to manage.
+- **Crash-safe work-packet flows** — pending continuations for LLM-requiring operations persist to the same store and survive server restarts; resuming with the same continuation token picks up where the flow left off.
 - **Replaces Claude Code's built-in auto-memory** via the `memory-override` SessionStart hook, which tells the session not to write to the built-in memory files. Disable the override with `disabled_hooks: ["memory-override"]` if you prefer to keep the built-in system active.
+
+### Work-packet protocol — LLM ops without an API key
+
+13 of Yith's memory operations need an LLM to do their work (`crystallize`, `consolidate`, `consolidate-pipeline`, `compress`, `summarize`, `flow-compress`, `graph-extract`, `temporal-graph-extract`, `expand-query`, `skill-extract`, `reflect`, `enrich-window`, `enrich-session`). If Yith has its own `ANTHROPIC_API_KEY` in `~/.oh-my-claudecode/yith/.env`, these run directly in-process.
+
+If no API key is configured, the session doesn't lose access to these functions — they just route through the **work-packet protocol** instead. Each LLM-requiring function has a `-step` state-machine variant that emits `WorkPacket` descriptors (systemPrompt + userPrompt + metadata) instead of calling the LLM itself. The flow looks like this:
+
+```
+yith_trigger("mem::consolidate-pipeline", {...})
+   ↓
+{status: "needs_llm_work", workPackets: [...], continuation: "wp_..."}
+   ↓
+Claude Code session executes each packet's prompts with its own subscription auth
+   ↓
+yith_commit_work(continuation, [{id, completion}, ...])
+   ↓
+{status: "needs_llm_work", ...} (another round) OR {status: "success", result}
+```
+
+Multi-call functions like `consolidate-pipeline` chain multiple rounds (semantic → reflect → procedural). Loop functions like `consolidate` / `reflect` / `enrich-session` emit packets in adaptive batches via `planLoopBatches` — small loops go "all-at-once" in one round, large loops batch in chunks sized by packet count or total prompt bytes. `doctor --yith-functions` marks LLM-requiring functions with a ⚡ so callers know to expect the `needs_llm_work` envelope.
 
 ### Programmatic API
 

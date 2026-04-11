@@ -5,7 +5,7 @@ All notable changes to oh-my-claudecode are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-04-11
 
 ### Added
 
@@ -17,6 +17,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API: `createYithArchive({ dataDir })` returns a handle exposing `remember`,
   `recall`, `search`, `context`, `observe`, and a raw `sdk` dispatcher for
   advanced use.
+- **Yith MCP server** — Yith Archive is now exposed to Claude Code as a
+  stdio MCP server registered automatically during `install`. Seven MCP
+  tools: `yith_remember`, `yith_search`, `yith_recall`, `yith_context`,
+  `yith_observe`, `yith_commit_work`, and `yith_trigger` (escape hatch
+  for ~90 advanced memory functions, with a curated 20-entry catalog
+  embedded in the tool description). The server runs as a child process
+  per session, speaks JSON-RPC over stdio, and logs to stderr so MCP
+  framing on stdout stays clean.
+- **Work-packet protocol** — sessions without an LLM API key can still
+  run the 13 LLM-requiring memory operations (`crystallize`,
+  `consolidate`, `consolidate-pipeline`, `compress`, `summarize`,
+  `flow-compress`, `graph-extract`, `temporal-graph-extract`,
+  `expand-query`, `skill-extract`, `reflect`, `enrich-window`,
+  `enrich-session`). Each is mirrored by a `-step` state-machine variant
+  that returns `WorkPacket` descriptors instead of calling the LLM
+  itself. The parent Claude Code session executes those prompts with
+  its own subscription auth and calls `yith_commit_work` to resume the
+  paused operation. Multi-round flows (`consolidate-pipeline` runs
+  semantic → reflect → procedural across 3+ rounds) are supported, as
+  are batched loops (`consolidate`, `reflect`, `enrich-session` emit
+  packets in `planLoopBatches`-sized chunks). Crash-safe: continuations
+  survive server restart because the pending state is atomically
+  persisted to the same `store.json` as everything else.
+- **Memory search unification** — memories written via `yith_remember`
+  now land in the hybrid search index at write-time and are surfaced by
+  `yith_search` / `mem::smart-search`. Previously the BM25 index only
+  indexed observations, so memories were invisible to search despite
+  being in the KV. The new `putMemory` / `deleteMemory` helpers in
+  `functions/search.ts` keep BM25, vector, and KV in sync across every
+  memory-writer call site (consolidation, relations, evolution,
+  eviction, forget, import/restore). Memories get a sentinel
+  `sessionId` so hydration branches correctly; hybrid-search diversity
+  caps bypass them.
+- **Atomic KV persistence** — `YithKV.persist()` now writes via
+  tmpfile + rename instead of a direct `writeFileSync`, eliminating the
+  silent data-loss mode where a crash mid-write corrupted the store
+  and the constructor then reset it to empty on reload.
+- **Versioned search index meta** — on-disk index header carries
+  `{schemaVersion, embeddingProvider, dimensions, generation}`. On boot,
+  mismatches (provider change, dimensions bump, schema version bump)
+  trigger a full rebuild; compatible headers restore in place.
+- **Local nomic embedding default** — fresh installs now ship with
+  `nomic-embed-text-v1.5` (768 dims, ~137 MB, lazy-downloaded on first
+  embed) as the default embedding backend via the existing
+  `@xenova/transformers` optional dep. Hosted providers (Gemini,
+  OpenAI, Voyage) remain opt-in via the installer. Zero-credential
+  installs are now fully functional for hybrid search.
+- **Lazy LLM provider** — `LazyLLMProvider` defers provider
+  construction until first use so boot never touches the API path,
+  keeping credential-less installs clean. When the work-packet protocol
+  intercept routes to a `-step` variant, the lazy provider never
+  resolves and the flow runs end-to-end without an LLM call.
+- **`doctor --yith-functions`** — prints the full 90-entry catalog
+  grouped by category, with a ⚡ marker on the 13 LLM-requiring
+  functions so callers know to expect the `needs_llm_work` envelope
+  when invoking them.
+- **Boot-time expiration sweep** — `WorkPacketStore.sweepExpired()`
+  runs fire-and-forget on every `createYithArchive()`, pruning
+  continuation tokens older than 24 hours so abandoned work-packet
+  flows don't accumulate across sessions.
 - **Block Summarizer** — in-session context trimming via
   delegation-as-block summarization. After Cthulhu delegates to a specialist
   via the Agent tool, the full output can be piped through
@@ -26,31 +86,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applied at the delegation boundary instead of the KV cache.
 - **`memory-override` hook** — SessionStart hook that redirects persistent
   memory writes from Claude Code's built-in auto-memory system to Yith
-  Archive. Fires only when `.elder-gods/` is present.
+  Archive. Fires only when `.elder-gods/` is present. The injected prompt
+  documents the 7 MCP tools and the work-packet loop pattern.
 - Cthulhu's orchestrator prompt gained two new operating principles:
   "Summarize after delegation" and "Persist insights to Yith Archive."
 - `LICENSE` file added at repo root (MIT) — previously declared in
   `package.json` but never materialized as a standalone file.
-- New package dependencies: `@anthropic-ai/sdk`, `dotenv`. Optional:
-  `@xenova/transformers` (for local embedding-based retrieval).
+- New package dependencies: `@anthropic-ai/sdk`, `@modelcontextprotocol/sdk`,
+  `dotenv`. Optional: `@xenova/transformers` (for local embedding-based
+  retrieval, enabled by default).
 
 ### Changed
 
 - Expanded hook count from 6 to 8 (adding `memory-override` and the Yith
   Archive's SessionStart retrieval flow).
 - `README.md` overhauled to reflect the larger scope: Yith Archive section,
-  Block Summarizer section, updated hooks table, new architecture notes.
+  Block Summarizer section, updated hooks table, new architecture notes,
+  MCP server + work-packet protocol docs.
+- `mem::consolidate-pipeline`'s `-step` variant runs reflect as a nested
+  sub-state-machine between semantic and procedural (matching the direct
+  path's ordering), not as a skipped marker. Reflect sub-failures are
+  soft-caught and recorded into `results.reflect` without blocking the
+  pipeline's terminal success.
+- `FakeSdk` logger now routes every `[yith]` line to stderr so MCP stdio
+  framing on stdout stays intact.
+
+### Fixed
+
+- Memories written via `yith_remember` were invisible to `yith_search`
+  (the BM25 index was only populated from observations). Every memory
+  writer in the codebase now routes through `putMemory` / `deleteMemory`
+  helpers that keep the index in sync — `remember`, `consolidate`,
+  `consolidate-pipeline`, `flow-compress`, `relations`, `evolve`,
+  `auto-forget`, `working-memory` auto-page, `diagnostics` heal,
+  `evict`, `retention-evict`, `import`, `snapshot-restore`.
+- Compile-time consistency check between `LLM_FUNCTION_REGISTRY` and
+  `LLM_REQUIRED_FUNCTIONS` — drift now throws at MCP server boot with
+  a clear error message pointing at the two files that must agree.
+- `planLoopBatches` throws on zero-item input instead of silently
+  returning a zero-plan that leads to empty-packet `needs_llm_work`
+  responses.
 
 ### Notes
 
-This is a feature release covering both of the "context efficiency" problems
-that oh-my-claudecode inherited from its architecture. Cross-session memory
-via Yith Archive addresses the "every new session re-explains everything"
-tax. In-session block summarization addresses the "single long session
-accumulates raw tool output until context rots" tax.
+This release ships the second half of Yith Archive: the MCP server that
+actually exposes it to Claude Code sessions, plus the work-packet protocol
+that lets credential-less sessions still run LLM-requiring memory
+operations through the parent agent's own auth. Combined with the search
+unification fix, memory written via `yith_remember` is now immediately
+retrievable via `yith_search` without waiting for a rebuild.
 
-The two subsystems are orthogonal and either can be disabled via
-`disabled_hooks` config without affecting the other.
+The work-packet protocol is the architectural workaround for Claude Code
+not (yet) supporting MCP sampling. When MCP sampling lands upstream, Yith
+can run the LLM calls itself and the `-step` variants become optional.
+Until then, the state-machine pattern lets every memory function run in
+zero-credential mode with the parent session as the LLM host.
 
 ## [0.1.6] — 2026-04-10
 
