@@ -80,6 +80,8 @@ import {
   registerConsolidationPipelineStepFunction,
 } from "./functions/consolidation-pipeline.js"
 import { registerBackfillFunction } from "./functions/backfill.js"
+import { registerCompressBatchFunction } from "./functions/compress-batch.js"
+import { registerOpencodeImportFunction } from "./functions/opencode-import.js"
 import { registerSnapshotFunction } from "./functions/snapshot.js"
 import { registerActionsFunction } from "./functions/actions.js"
 import { registerFrontierFunction } from "./functions/frontier.js"
@@ -307,6 +309,8 @@ export function createYithArchive(
   registerConsolidationPipelineFunction(sdk, kv, provider)
   registerConsolidationPipelineStepFunction(sdk, kv)
   registerBackfillFunction(sdk, kv)
+  registerCompressBatchFunction(sdk, kv)
+  registerOpencodeImportFunction(sdk, kv)
   registerActionsFunction(sdk, kv)
   registerFrontierFunction(sdk, kv)
   registerLeasesFunction(sdk, kv)

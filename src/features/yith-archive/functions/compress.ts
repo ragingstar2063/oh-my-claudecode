@@ -42,7 +42,7 @@ const VALID_TYPES = new Set<string>([
   "other",
 ]);
 
-function parseCompressionXml(
+export function parseCompressionXml(
   xml: string,
 ): Omit<CompressedObservation, "id" | "sessionId" | "timestamp"> | null {
   const rawType = getXmlTag(xml, "type");

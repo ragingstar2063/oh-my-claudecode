@@ -46,6 +46,101 @@ function sanitizeCwd(cwd: string): string {
   return cwd.replace(/\//g, "-")
 }
 
+/**
+ * Best-effort inverse of `sanitizeCwd` — maps a sanitized Claude Code
+ * directory name (e.g. `-home-alice-foo`) back to the absolute path
+ * that produced it (`/home/alice/foo`). Reliable for paths that contain
+ * no literal dashes; ambiguous for paths that do (e.g. `my-project`
+ * would round-trip incorrectly). For the common case of home paths
+ * like `/home/<user>/<project>` it's exact.
+ *
+ * Used by the all-projects backfill path to reconstruct the original
+ * cwd from every directory under `~/.claude/projects/` so observations
+ * can be tagged with a real absolute project path instead of just the
+ * sanitized label.
+ */
+export function unsanitizeClaudeCodeDirName(dirName: string): string {
+  // Collapse leading dashes to a single slash.
+  if (!dirName.startsWith("-")) return dirName
+  return "/" + dirName.slice(1).replace(/-/g, "/")
+}
+
+/**
+ * Descriptor for one project's transcripts, yielded by the
+ * `enumerateTranscriptProjects` scanner.
+ */
+export interface TranscriptProject {
+  /** Absolute path, best-effort reconstructed from the sanitized name. */
+  projectCwd: string
+  /** Raw directory name on disk, e.g. `-home-alice-foo`. */
+  sanitized: string
+  /** Absolute path to the transcript dir itself. */
+  dirPath: string
+  /** Number of valid `.jsonl` files in the directory. */
+  transcriptCount: number
+}
+
+/**
+ * List every project subdirectory under a given `~/.claude/projects/`
+ * base path, returning one descriptor per subdir. Used by the all-
+ * projects backfill mode so a single `bind` run ingests every project's
+ * history, not just the cwd's.
+ *
+ * Subdirs that contain zero `.jsonl` files are still returned with
+ * `transcriptCount: 0` so the caller can report them in the TUI as
+ * "known but empty" rather than silently skipping.
+ *
+ * Returns empty array (never throws) when `baseDir` doesn't exist —
+ * fresh machines with no prior Claude Code history show up as zero
+ * projects rather than a hard error.
+ */
+export function enumerateTranscriptProjects(
+  baseDir: string,
+): TranscriptProject[] {
+  if (!existsSync(baseDir)) return []
+
+  let entries: string[]
+  try {
+    entries = readdirSync(baseDir)
+  } catch {
+    return []
+  }
+
+  const projects: TranscriptProject[] = []
+  for (const entry of entries) {
+    const full = join(baseDir, entry)
+    let st
+    try {
+      st = statSync(full)
+    } catch {
+      continue
+    }
+    if (!st.isDirectory()) continue
+
+    // Count transcripts matching the UUID pattern. Non-.jsonl files
+    // and random files (READMEs, .bak backups) are excluded.
+    let count = 0
+    try {
+      for (const inner of readdirSync(full)) {
+        if (!inner.endsWith(".jsonl")) continue
+        const sid = inner.slice(0, -".jsonl".length)
+        if (!/^[0-9a-f-]{8,}$/i.test(sid)) continue
+        count++
+      }
+    } catch {
+      // Subdir unreadable — report as zero and continue.
+    }
+
+    projects.push({
+      projectCwd: unsanitizeClaudeCodeDirName(entry),
+      sanitized: entry,
+      dirPath: full,
+      transcriptCount: count,
+    })
+  }
+  return projects
+}
+
 /** Metadata about a discovered transcript file. */
 interface TranscriptInfo {
   sessionId: string
@@ -286,8 +381,19 @@ function* lineToRawObservations(
 
 /** Args accepted by `mem::backfill-sessions`. Mirrors the plan doc. */
 interface BackfillArgs {
-  /** Absolute cwd of the project whose transcripts to scan. */
+  /** Absolute cwd of the project whose transcripts to scan. Ignored
+   *  when `allProjects: true` is set. */
   projectCwd?: string
+  /**
+   * All-projects mode: scan every subdirectory under
+   * `~/.claude/projects/`, unsanitize each one back to its absolute
+   * path, and run the single-project backfill over each. Observations
+   * for each project land in their own session scope, tagged with
+   * the real cwd. This is the default mode used by the CLI `bind`
+   * subcommand so a single invocation ingests history for every
+   * project the user has ever opened Claude Code in.
+   */
+  allProjects?: boolean
   /** Scan only a specific session. Default: all transcripts in the dir. */
   sessionId?: string
   /** Dry-run — report counts, write nothing. */
@@ -296,7 +402,9 @@ interface BackfillArgs {
   includeSystem?: boolean
   /** Include `tool_result` blocks. Default false. */
   includeToolResults?: boolean
-  /** Hard cap on observations created per run. Default 500. */
+  /** Hard cap on observations created per run. Default 500. Applies
+   *  GLOBALLY across all projects in allProjects mode (not per-project)
+   *  so a runaway backfill can't blow past the budget. */
   maxObservations?: number
 }
 
@@ -343,6 +451,217 @@ export function renderProgressBar(
   return `[${bar}] ${pctStr} — ${current}/${total} ${label}`
 }
 
+/**
+ * Increment the global pending-compression counter by `delta`. The
+ * counter lives under `KV.pendingCompression → "state"` and drives
+ * the /cthulhu preflight's "you have N observations pending" nudge
+ * plus the CLI bind summary line. Negative deltas are fine — the
+ * counter is floored at zero to avoid drift if compress-step double-
+ * decrements for some reason.
+ */
+async function bumpPendingCompression(
+  kv: StateKV,
+  delta: number,
+): Promise<number> {
+  const existing =
+    (await kv
+      .get<{ count: number; updatedAt: string }>(
+        KV.pendingCompression,
+        "state",
+      )
+      .catch(() => null)) ?? { count: 0, updatedAt: "" }
+  const next = Math.max(0, existing.count + delta)
+  await kv.set(KV.pendingCompression, "state", {
+    count: next,
+    updatedAt: new Date().toISOString(),
+  })
+  return next
+}
+
+/**
+ * Per-project backfill worker — scans one project's transcripts, writes
+ * raw observations, advances cursors, and bumps the pending counter.
+ * Extracted so the top-level function can invoke it once (single-project
+ * mode) or in a loop (all-projects mode) without duplicating logic.
+ *
+ * Returns a `BackfillRun` with the stats for this one project.
+ *
+ * The `globalBudget` argument is the remaining observation cap across
+ * the whole bind run (not just this project). In all-projects mode it
+ * decrements as each project contributes observations so the total
+ * across projects never exceeds `maxObservations`. Pass `Infinity` for
+ * single-project mode to disable the cross-project constraint.
+ */
+async function runProjectBackfill(
+  kv: StateKV,
+  projectCwd: string,
+  args: BackfillArgs,
+  globalBudget: number,
+): Promise<BackfillRun> {
+  const dryRun = args.dryRun === true
+  const includeSystem = args.includeSystem === true
+  const includeToolResults = args.includeToolResults === true
+
+  const runId = generateId("bfr")
+  const startedAt = new Date().toISOString()
+
+  const transcripts = discoverTranscripts(projectCwd)
+  if (transcripts.length === 0) {
+    return {
+      runId,
+      projectCwd,
+      startedAt,
+      completedAt: new Date().toISOString(),
+      transcriptsScanned: 0,
+      linesRead: 0,
+      observationsCreated: 0,
+      observationsSkipped: 0,
+      linesSkippedByType: {},
+      errors: [
+        `No transcripts found in ~/.claude/projects/${sanitizeCwd(projectCwd)}/`,
+      ],
+      progressBar: renderProgressBar(0, 0, "observations created"),
+    }
+  }
+
+  const scoped = args.sessionId
+    ? transcripts.filter((t) => t.sessionId === args.sessionId)
+    : transcripts
+
+  let linesRead = 0
+  let observationsCreated = 0
+  let observationsSkipped = 0
+  const linesSkippedByType: Record<string, number> = {}
+  const errors: string[] = []
+  const cursorUpdates: Array<BackfillCursor> = []
+
+  outer: for (const t of scoped) {
+    const cursorKey = `${projectCwd}|${t.sessionId}`
+    const existingCursor = await kv
+      .get<BackfillCursor>(KV.backfillCursors, cursorKey)
+      .catch(() => null)
+    const sinceUuid = existingCursor?.lastUuid
+
+    let lastUuidThisRun: string | undefined
+
+    try {
+      for (const line of parseTranscriptLines(t.path, sinceUuid)) {
+        linesRead++
+        if (!includeSystem && line.type === "system") {
+          linesSkippedByType[line.type] =
+            (linesSkippedByType[line.type] ?? 0) + 1
+          lastUuidThisRun = line.uuid ?? lastUuidThisRun
+          continue
+        }
+        const droppedType = [
+          "attachment",
+          "file-history-snapshot",
+          "permission-mode",
+          "last-prompt",
+        ]
+        if (droppedType.includes(line.type)) {
+          linesSkippedByType[line.type] =
+            (linesSkippedByType[line.type] ?? 0) + 1
+          lastUuidThisRun = line.uuid ?? lastUuidThisRun
+          continue
+        }
+
+        for (const obs of lineToRawObservations(
+          line,
+          includeSystem,
+          includeToolResults,
+        )) {
+          if (observationsCreated >= globalBudget) {
+            errors.push(
+              `global budget reached — remaining lines deferred to next run`,
+            )
+            break outer
+          }
+
+          const existing = await kv
+            .get(KV.observations(obs.sessionId), obs.id)
+            .catch(() => null)
+          if (existing) {
+            observationsSkipped++
+            lastUuidThisRun = line.uuid ?? lastUuidThisRun
+            continue
+          }
+
+          if (!dryRun) {
+            // Upsert a Session record so search.rebuildIndex and the
+            // consolidation pipeline can discover these obs via the
+            // standard KV.sessions → KV.observations traversal.
+            const existingSession = await kv
+              .get<Session>(KV.sessions, obs.sessionId)
+              .catch(() => null)
+            if (!existingSession) {
+              const session: Session = {
+                id: obs.sessionId,
+                project: projectCwd,
+                cwd: projectCwd,
+                startedAt: obs.timestamp,
+                status: "completed",
+                observationCount: 0,
+              }
+              await kv.set(KV.sessions, obs.sessionId, session)
+            }
+            await kv.set(KV.observations(obs.sessionId), obs.id, obs)
+            // Raw obs are pending compression until a compress-step
+            // writes a CompressedObservation over them.
+            await bumpPendingCompression(kv, 1)
+          }
+
+          observationsCreated++
+          lastUuidThisRun = line.uuid ?? lastUuidThisRun
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      errors.push(`${t.sessionId}: ${msg}`)
+      continue
+    }
+
+    if (lastUuidThisRun && !dryRun) {
+      cursorUpdates.push({
+        projectCwd,
+        sessionId: t.sessionId,
+        lastUuid: lastUuidThisRun,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+  }
+
+  if (!dryRun) {
+    for (const cursor of cursorUpdates) {
+      const key = `${cursor.projectCwd}|${cursor.sessionId}`
+      await kv.set(KV.backfillCursors, key, cursor)
+    }
+  }
+
+  const completedAt = new Date().toISOString()
+  const run: BackfillRun = {
+    runId,
+    projectCwd,
+    startedAt,
+    completedAt,
+    transcriptsScanned: scoped.length,
+    linesRead,
+    observationsCreated,
+    observationsSkipped,
+    linesSkippedByType,
+    errors,
+    progressBar: renderProgressBar(
+      observationsCreated,
+      Math.max(observationsCreated, 1),
+      `observations in ${projectCwd}`,
+    ),
+  }
+  if (!dryRun) {
+    await kv.set(KV.backfillRuns, runId, run)
+  }
+  return run
+}
+
 export function registerBackfillFunction(
   sdk: FakeSdk,
   kv: StateKV,
@@ -351,189 +670,92 @@ export function registerBackfillFunction(
     {
       id: "mem::backfill-sessions",
       description:
-        "Scan ~/.claude/projects/<cwd>/*.jsonl transcripts and persist past " +
-        "user prompts, assistant responses, and tool calls as raw observations.",
+        "Scan ~/.claude/projects/ transcripts and persist past user " +
+        "prompts, assistant responses, and tool calls as raw observations. " +
+        "Pass allProjects:true to ingest every project at once.",
     },
     async (args: BackfillArgs) => {
-      const projectCwd = args.projectCwd ?? process.cwd()
-      const dryRun = args.dryRun === true
-      const includeSystem = args.includeSystem === true
-      const includeToolResults = args.includeToolResults === true
       const maxObservations = args.maxObservations ?? 500
 
-      const runId = generateId("bfr")
-      const startedAt = new Date().toISOString()
+      // All-projects mode: enumerate every subdir under
+      // ~/.claude/projects/, run the per-project backfill in sequence
+      // with a shared global budget, and return aggregated results.
+      if (args.allProjects === true) {
+        const baseDir = join(homedir(), ".claude", "projects")
+        const projects = enumerateTranscriptProjects(baseDir)
+        const perProject: BackfillRun[] = []
+        let remaining = maxObservations
 
-      const transcripts = discoverTranscripts(projectCwd)
-      if (transcripts.length === 0) {
+        for (const p of projects) {
+          if (remaining <= 0) break
+          const run = await runProjectBackfill(kv, p.projectCwd, args, remaining)
+          remaining -= run.observationsCreated
+          perProject.push(run)
+        }
+
+        const totalObservationsCreated = perProject.reduce(
+          (s, r) => s + r.observationsCreated,
+          0,
+        )
+        const totalTranscriptsScanned = perProject.reduce(
+          (s, r) => s + r.transcriptsScanned,
+          0,
+        )
+        const totalLinesRead = perProject.reduce(
+          (s, r) => s + r.linesRead,
+          0,
+        )
+        const allErrors = perProject.flatMap((r) => r.errors)
+
+        logger.info("All-projects backfill complete", {
+          totalProjects: projects.length,
+          totalObservationsCreated,
+          totalTranscriptsScanned,
+          errors: allErrors.length,
+        })
+
         return {
           success: true,
-          runId,
-          projectCwd,
-          transcriptsScanned: 0,
-          linesRead: 0,
-          observationsCreated: 0,
-          observationsSkipped: 0,
-          linesSkippedByType: {},
-          errors: [
-            `No transcripts found in ~/.claude/projects/${sanitizeCwd(projectCwd)}/`,
-          ],
-          progressBar: renderProgressBar(0, 0, "observations created"),
+          allProjects: true,
+          totalProjects: projects.length,
+          totalTranscriptsScanned,
+          totalLinesRead,
+          totalObservationsCreated,
+          perProject: perProject.map((r) => ({
+            projectCwd: r.projectCwd,
+            transcriptsScanned: r.transcriptsScanned,
+            observationsCreated: r.observationsCreated,
+            observationsSkipped: r.observationsSkipped,
+            errors: r.errors,
+          })),
+          errors: allErrors,
+          progressBar: renderProgressBar(
+            totalObservationsCreated,
+            Math.max(totalObservationsCreated, 1),
+            "observations across all projects",
+          ),
         }
       }
 
-      // Filter to a single session if requested.
-      const scoped = args.sessionId
-        ? transcripts.filter((t) => t.sessionId === args.sessionId)
-        : transcripts
-
-      let linesRead = 0
-      let observationsCreated = 0
-      let observationsSkipped = 0
-      const linesSkippedByType: Record<string, number> = {}
-      const errors: string[] = []
-      const cursorUpdates: Array<BackfillCursor> = []
-
-      outer: for (const t of scoped) {
-        // Load existing cursor for this session to enable incremental ingestion.
-        const cursorKey = `${projectCwd}|${t.sessionId}`
-        const existingCursor = await kv
-          .get<BackfillCursor>(KV.backfillCursors, cursorKey)
-          .catch(() => null)
-        const sinceUuid = existingCursor?.lastUuid
-
-        let lastUuidThisRun: string | undefined
-
-        try {
-          for (const line of parseTranscriptLines(t.path, sinceUuid)) {
-            linesRead++
-            if (!includeSystem && line.type === "system") {
-              linesSkippedByType[line.type] =
-                (linesSkippedByType[line.type] ?? 0) + 1
-              lastUuidThisRun = line.uuid ?? lastUuidThisRun
-              continue
-            }
-            const droppedType = [
-              "attachment",
-              "file-history-snapshot",
-              "permission-mode",
-              "last-prompt",
-            ]
-            if (droppedType.includes(line.type)) {
-              linesSkippedByType[line.type] =
-                (linesSkippedByType[line.type] ?? 0) + 1
-              lastUuidThisRun = line.uuid ?? lastUuidThisRun
-              continue
-            }
-
-            for (const obs of lineToRawObservations(
-              line,
-              includeSystem,
-              includeToolResults,
-            )) {
-              if (observationsCreated >= maxObservations) {
-                errors.push(
-                  `maxObservations cap (${maxObservations}) reached — remaining lines deferred to next run`,
-                )
-                break outer
-              }
-
-              // Idempotency: skip if this observation ID already exists
-              // in the session's observation scope.
-              const existing = await kv
-                .get(KV.observations(obs.sessionId), obs.id)
-                .catch(() => null)
-              if (existing) {
-                observationsSkipped++
-                lastUuidThisRun = line.uuid ?? lastUuidThisRun
-                continue
-              }
-
-              if (!dryRun) {
-                // Ensure a Session record exists so downstream code
-                // (search.rebuildIndex, consolidate, etc.) can discover
-                // the backfilled observations via the standard
-                // KV.sessions → KV.observations traversal.
-                const existingSession = await kv
-                  .get<Session>(KV.sessions, obs.sessionId)
-                  .catch(() => null)
-                if (!existingSession) {
-                  const session: Session = {
-                    id: obs.sessionId,
-                    project: projectCwd,
-                    cwd: projectCwd,
-                    startedAt: obs.timestamp,
-                    status: "completed",
-                    observationCount: 0,
-                  }
-                  await kv.set(KV.sessions, obs.sessionId, session)
-                }
-                await kv.set(KV.observations(obs.sessionId), obs.id, obs)
-              }
-
-              observationsCreated++
-              lastUuidThisRun = line.uuid ?? lastUuidThisRun
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          errors.push(`${t.sessionId}: ${msg}`)
-          continue
-        }
-
-        if (lastUuidThisRun && !dryRun) {
-          cursorUpdates.push({
-            projectCwd,
-            sessionId: t.sessionId,
-            lastUuid: lastUuidThisRun,
-            updatedAt: new Date().toISOString(),
-          })
-        }
-      }
-
-      // Persist cursor updates in a single batch so a crash mid-scan
-      // doesn't leave half the cursors advanced.
-      if (!dryRun) {
-        for (const cursor of cursorUpdates) {
-          const key = `${cursor.projectCwd}|${cursor.sessionId}`
-          await kv.set(KV.backfillCursors, key, cursor)
-        }
-      }
-
-      const completedAt = new Date().toISOString()
-      const progressBar = renderProgressBar(
-        observationsCreated,
-        Math.max(observationsCreated, maxObservations),
-        "observations created (raw — run mem::compress-step to compress)",
+      // Single-project mode (original behavior).
+      const projectCwd = args.projectCwd ?? process.cwd()
+      const run = await runProjectBackfill(
+        kv,
+        projectCwd,
+        args,
+        maxObservations,
       )
 
-      const runRecord: BackfillRun = {
-        runId,
-        projectCwd,
-        startedAt,
-        completedAt,
-        transcriptsScanned: scoped.length,
-        linesRead,
-        observationsCreated,
-        observationsSkipped,
-        linesSkippedByType,
-        errors,
-        progressBar,
-      }
-      if (!dryRun) {
-        await kv.set(KV.backfillRuns, runId, runRecord)
-      }
-
       logger.info("Backfill complete", {
-        runId,
-        projectCwd,
-        transcriptsScanned: scoped.length,
-        observationsCreated,
-        observationsSkipped,
-        errors: errors.length,
+        runId: run.runId,
+        projectCwd: run.projectCwd,
+        transcriptsScanned: run.transcriptsScanned,
+        observationsCreated: run.observationsCreated,
+        observationsSkipped: run.observationsSkipped,
+        errors: run.errors.length,
       })
 
-      return { success: true, ...runRecord }
+      return { success: true, ...run }
     },
   )
 }

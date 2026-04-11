@@ -50,6 +50,20 @@ export const KV = {
   /** History of backfill runs for debugging / auditing. Key = runId,
    *  value = `{ startedAt, completedAt, projectCwd, stats, errors }`. */
   backfillRuns: "mem:backfill:runs",
+  /** Binding ritual state. Single entry under key "current" holds the
+   *  BindState object (phase completion, cursors, errors). The CLI's
+   *  `oh-my-claudecode bind` command reads this on start and resumes
+   *  from the first incomplete phase. See state/bind-state.ts. */
+  bindState: "mem:bind-state",
+  /** Pending-compression counter. Key "state" holds `{ count, updatedAt }`.
+   *  Incremented on raw observation writes by mem::backfill-sessions,
+   *  decremented on compressed-observation writes by mem::compress-step.
+   *  The /cthulhu preflight reads this to tell the user how much work
+   *  is waiting to be processed via the work-packet loop. */
+  pendingCompression: "mem:pending-compression",
+  /** Per-session cursors for the opencode SQLite importer. Key =
+   *  `${db_path}|${opencode_session_id}`, value = `{ lastPartId }`. */
+  opencodeImportCursors: "mem:opencode-import:cursors",
 } as const;
 
 export const STREAM = {

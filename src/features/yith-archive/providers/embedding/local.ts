@@ -48,6 +48,43 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     this.name = `local:${this.model.replace(/^Xenova\//, "")}`;
   }
 
+  /**
+   * Force the model to load (and download if necessary) with optional
+   * progress reporting. Called by `oh-my-claudecode bind` at the start
+   * of the binding ritual so the user sees a real download progress
+   * bar instead of a silent multi-minute wait on their first memory
+   * write. Idempotent: re-running against an already-loaded provider
+   * just re-emits loading/ready events synchronously.
+   *
+   * The onProgress callback receives events with `phase` ∈
+   * `{loading, downloading, ready, error}`. The `downloading` phase
+   * carries byte counts when @xenova/transformers surfaces them via
+   * its internal progress_callback hook; the others are lifecycle
+   * markers. Callers should render the stream as a TUI bar.
+   */
+  async warmUp(opts?: {
+    onProgress?: (event: {
+      phase: "loading" | "downloading" | "ready" | "error"
+      message?: string
+      loaded?: number
+      total?: number
+    }) => void
+  }): Promise<void> {
+    const onProgress = opts?.onProgress
+    onProgress?.({
+      phase: "loading",
+      message: `Loading embedding model ${this.model}`,
+    })
+    try {
+      await this.getExtractor(onProgress)
+      onProgress?.({ phase: "ready", message: "Model loaded and cached" })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      onProgress?.({ phase: "error", message })
+      throw err
+    }
+  }
+
   async embed(text: string): Promise<Float32Array> {
     const extractor = await this.getExtractor();
     const prefixed = this.isNomic() ? `search_query: ${text}` : text;
@@ -76,10 +113,23 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     return this.model.toLowerCase().includes("nomic");
   }
 
-  private async getExtractor() {
+  private async getExtractor(
+    onProgress?: (event: {
+      phase: "loading" | "downloading" | "ready" | "error"
+      message?: string
+      loaded?: number
+      total?: number
+    }) => void,
+  ) {
     if (this.extractor) return this.extractor;
 
-    let transformers: { pipeline: Pipeline };
+    let transformers: {
+      pipeline: (
+        task: string,
+        model: string,
+        opts?: { progress_callback?: (data: unknown) => void },
+      ) => Promise<Awaited<ReturnType<Pipeline>>>
+    };
     try {
       // @ts-ignore - optional peer dependency
       transformers = await import("@xenova/transformers");
@@ -99,6 +149,35 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     this.extractor = await transformers.pipeline(
       "feature-extraction",
       this.model,
+      {
+        // Forward xenova's internal progress events to our caller's
+        // callback. Xenova emits per-file download events with
+        // {status, name, file, progress, loaded, total} — we map the
+        // ones we understand into our simpler phase vocabulary.
+        progress_callback: (data: unknown) => {
+          if (!onProgress) return
+          const ev = data as {
+            status?: string
+            file?: string
+            progress?: number
+            loaded?: number
+            total?: number
+          }
+          if (ev.status === "progress" || ev.status === "download") {
+            onProgress({
+              phase: "downloading",
+              message: ev.file,
+              loaded: ev.loaded,
+              total: ev.total,
+            })
+          } else if (ev.status === "ready" || ev.status === "done") {
+            onProgress({
+              phase: "ready",
+              message: ev.file,
+            })
+          }
+        },
+      },
     );
     logger.info(
       `Local embedding model loaded in ${Date.now() - started}ms`,
