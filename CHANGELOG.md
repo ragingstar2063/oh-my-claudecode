@@ -5,6 +5,122 @@ All notable changes to oh-my-claudecode are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-04-11
+
+### Added
+
+- **`oh-my-claudecode bind` CLI subcommand** — the real binding
+  ritual runs as a Node process in the user's terminal (not as a
+  Claude Code slash command, which the earlier design had and which
+  skipped steps silently). Full ANSI TUI with in-place progress
+  bars, section headers, status glyphs, and phase-level resume via
+  a new `KV.bindState` scope. Six phases in strict order:
+  `embedding_download → claude_transcripts → opencode_import →
+  sisyphus_migrate → preliminary_seed → pending_compression_trigger`.
+  Each phase persists its state after transitioning so a mid-run
+  crash resumes exactly where it stopped — no manual intervention.
+- **All-projects Claude Code transcript backfill.** `mem::backfill-
+  sessions` gains `allProjects: true` mode that enumerates every
+  subdirectory under `~/.claude/projects/`, unsanitizes the
+  directory name back to an absolute path, and runs the per-project
+  scanner against each. Single invocation ingests history for every
+  project the user has ever opened Claude Code in.
+- **Opencode SQLite importer** (`mem::import-opencode`). Reads a
+  legacy `oh-my-opencode`'s `~/.local/share/opencode/opencode.db`
+  (or a user-specified path) via the `sqlite3` CLI in `-json` mode,
+  walks `project → session → message → part`, and maps each `part`
+  to a Yith RawObservation using a dedicated mapper for opencode's
+  content-block shape (text / tool / reasoning / patch / step-start
+  / step-finish). Stable IDs `oc:<sessionId>:<partId>` make
+  re-imports idempotent. Per-session cursors under
+  `KV.opencodeImportCursors` enable incremental ingestion.
+- **Sisyphus → elder-gods migrator** (`oh-my-claudecode bind`
+  handles this as a phase; also exposed as `migrateSisyphusDir`
+  function). Walks every `.sisyphus/` directory on the user's
+  machine and copies plans / handoffs / evidence into the
+  corresponding `.elder-gods/` equivalent, translating
+  `boulder.json` into a synthesized `legacy-boulder.md` plan file.
+  Non-destructive: the source `.sisyphus/` dir is left intact.
+  Idempotent: a second run copies nothing.
+- **Deep project-code scanner for preliminary memories**
+  (`scanProject` + `projectSummaryToObservations`). Walks a
+  project tree honoring `.gitignore`, counts language files by
+  extension, parses `package.json` / `tsconfig.json` /
+  `Cargo.toml` / `pyproject.toml` / `go.mod` / etc., extracts
+  README title + first paragraph + H2 headings, builds a top-level
+  directory tree summary. Synthesizes 5 preliminary
+  RawObservations per project (languages, package info, README,
+  directory structure, config files) so brand-new projects with
+  zero history still land in the Necronomicon with useful baseline
+  context. Walk depth capped at 6 and file count capped at 2000 to
+  keep the scan bounded.
+- **`mem::compress-batch-step`** — new loop-style work-packet
+  function that walks every raw observation in the archive, emits
+  compression prompts in `planLoopBatches` chunks, and consumes
+  completions into `CompressedObservation`s. This is the Phase 2
+  counterpart to the CLI's fast filesystem Phase 1: the CLI
+  ingests raw, `compress-batch-step` distills raw into searchable
+  memories. Drives the pending-compression counter from the `bind`
+  output down to zero as batches complete.
+- **Embedding model pre-download hook** — `LocalEmbeddingProvider`
+  gains a `warmUp({onProgress})` method that forces the nomic
+  model to load (and download if missing) while emitting
+  `{phase: "loading" | "downloading" | "ready" | "error", loaded,
+  total}` events. The CLI bind TUI subscribes to these and draws
+  a real progress bar so users see the 137 MB download happen
+  instead of waiting in silence.
+- **Pending-compression counter** — new `KV.pendingCompression`
+  scope tracks how many raw observations are awaiting compression
+  across the whole archive. `cthulhu-auto` hook reads it on every
+  session start and offers to drain the queue via the work-packet
+  loop when the count is non-zero.
+- **`cthulhu-auto` preflight** now shells out to `jq` to read
+  `necronomicon.json` and emit a tailored preflight block based
+  on the bind state: hard-block when unbound, retry nudge when
+  phases failed, pending-compression offer when the queue has
+  entries, quiet confirmation when everything's done.
+- **`oh-my-claudecode bind --install-cron [--interval 1h]`** —
+  installs a system crontab entry that runs `bind --resume` on
+  the chosen interval. The resume path uses `claude -p` (Claude
+  Code's non-interactive mode) with restricted tool allowlist
+  (`mcp__yith-archive__*` only), a `--max-budget-usd` cap, and
+  an embedded compression-loop prompt to drain pending work
+  unattended using the user's subscription auth. Idempotent
+  crontab edit via a `# oh-my-claudecode bind` marker line.
+- **Node built-in test runner (`node:test`) infrastructure** —
+  added `tsx` as a devDependency and `test` / `test:watch` npm
+  scripts. 70 tests now cover bind state, backfill all-projects
+  mode, compress-batch loop, embedding warmup, TUI primitives,
+  cron assembly, preflight generation, opencode mapping and
+  import, sisyphus migration, and project scan. Run with
+  `npm test`.
+
+### Changed
+
+- Slash command renamed `/bind-necronomicon` → `/necronomicon-bind`.
+  The new command is a thin wrapper that shells out to
+  `oh-my-claudecode bind` (fast, real progress) and then drives
+  Phase 2 compression inline via the work-packet loop using the
+  session's own LLM. No more prompt-only ritual that silently
+  skipped steps.
+- `cthulhu.md` and `cthulhu-auto` hook both now read bind state
+  from `necronomicon.json` at activation and tell the user to run
+  `/necronomicon-bind` if the archive isn't bound yet.
+
+### Fixed
+
+- Earlier versions of `/bind-necronomicon` were prompt-only — they
+  relied on Claude to call `yith_remember` / `yith_trigger` inline
+  from the slash command. In practice Claude skipped the calls and
+  printed cosmetic ✓ marks, leaving the Necronomicon empty. The
+  new design moves the actual work into a CLI subcommand so the
+  ritual is deterministic.
+- `mem::backfill-sessions` previously hardcoded the single-project
+  scope to `process.cwd()`, which meant running it from any shell
+  only ingested one project's history. The `allProjects: true`
+  mode scans every subdir under `~/.claude/projects/` so a single
+  invocation covers everything.
+
 ## [0.2.3] — 2026-04-11
 
 > Note: v0.2.0 and v0.2.2 were never tagged/released because the

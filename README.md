@@ -144,6 +144,53 @@ Named for the Great Race of Yith from *The Shadow Out of Time* — mind-transfer
 - **Crash-safe work-packet flows** — pending continuations for LLM-requiring operations persist to the same store and survive server restarts; resuming with the same continuation token picks up where the flow left off.
 - **Replaces Claude Code's built-in auto-memory** via the `memory-override` SessionStart hook, which tells the session not to write to the built-in memory files. Disable the override with `disabled_hooks: ["memory-override"]` if you prefer to keep the built-in system active.
 
+### The binding ritual (`oh-my-claudecode bind`)
+
+Fresh installs start with an empty `necronomicon.json`. To populate it
+with history, run one command in your terminal:
+
+```bash
+oh-my-claudecode bind
+```
+
+This kicks off a six-phase ritual with a real ANSI TUI (progress bars,
+section headers, per-phase status):
+
+1. **Embedding sigil** — downloads the local nomic embedding model
+   (~137 MB) with a live byte-counter progress bar.
+2. **Claude Code transcripts** — scans every subdirectory under
+   `~/.claude/projects/` (every project you've ever opened a session
+   in), parses the `.jsonl` transcripts, and writes one raw
+   observation per user prompt / assistant text / tool call.
+3. **Opencode grimoire** — if you're migrating from oh-my-opencode, the
+   ritual auto-detects `~/.local/share/opencode/opencode.db` and
+   imports every project / session / message / part it finds.
+4. **Sisyphus migration** — walks your home looking for legacy
+   `.sisyphus/` directories (the oh-my-opencode equivalent of
+   `.elder-gods/`) and copies plans, handoffs, and evidence into the
+   new layout without touching the source.
+5. **Project code scan** — for each project the CLI has seen, walks
+   the code tree (gitignore-aware) and seeds preliminary memories:
+   language stats, package metadata, README sections, directory tree.
+6. **Sealing** — reports how many raw observations are queued for
+   compression and points you at the next step.
+
+The ritual is **resumable**: if any phase errors or you interrupt it,
+re-running `oh-my-claudecode bind` picks up from the failed phase via
+the `KV.bindState` cursor — no manual intervention required.
+
+Phase 2 (LLM-dependent compression of raw observations into
+searchable memories) runs **inside a Claude Code session** via the
+work-packet loop. Either:
+
+- Open Claude Code and run `/necronomicon-bind` — uses your
+  subscription auth via the MCP work-packet protocol.
+- Or install a cron entry that spawns `claude -p` on an interval:
+  ```bash
+  oh-my-claudecode bind --install-cron --interval 1h
+  ```
+  The cron tick drives compression unattended. No API key needed.
+
 ### Work-packet protocol — LLM ops without an API key
 
 13 of Yith's memory operations need an LLM to do their work (`crystallize`, `consolidate`, `consolidate-pipeline`, `compress`, `summarize`, `flow-compress`, `graph-extract`, `temporal-graph-extract`, `expand-query`, `skill-extract`, `reflect`, `enrich-window`, `enrich-session`). If Yith has its own `ANTHROPIC_API_KEY` in `~/.oh-my-claudecode/yith/.env`, these run directly in-process.
@@ -233,7 +280,7 @@ After installation these are available in Claude Code sessions:
 | Command | Description |
 |---------|-------------|
 | `/cthulhu` | Activate Cthulhu orchestrator mode (also creates `.elder-gods/` on first use) |
-| `/bind-necronomicon` | First-time Yith Archive setup ritual — tome check, embedding warmup, search verify, optional session backfill |
+| `/necronomicon-bind` | Necronomicon binding ritual — shells out to `oh-my-claudecode bind` (real TUI, all-projects ingestion, opencode import, sisyphus migration, preliminary code scan) then drains pending compression via the work-packet loop using this session's LLM |
 | `/shoggoth` | Fast parallel codebase search |
 | `/yog-sothoth` | Consult the architecture/debug advisor |
 | `/elder-loop` | Start the self-referential completion loop |
