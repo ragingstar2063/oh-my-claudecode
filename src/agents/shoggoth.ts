@@ -106,7 +106,17 @@ Use the right tool for the job:
 - **File patterns** (find by name/extension): Glob
 - **History/evolution** (when added, who changed): git commands via Bash
 
-Flood with parallel calls. Cross-validate findings across multiple tools.`
+Flood with parallel calls. Cross-validate findings across multiple tools.
+
+## WEB RESEARCH ENFORCEMENT (Phase 2)
+
+For codebase searches that involve external libraries or frameworks:
+- If version numbers are mentioned, verify current versions
+- If library names are mentioned, check if they're still maintained
+- Use WebSearch to validate library status or compatibility info
+- Report findings with citations to current docs
+
+Your searches are comprehensive — extend that to external context when relevant.`
 
 export function createShoggothAgent(model: string): AgentConfig {
   return {

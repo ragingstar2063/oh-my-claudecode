@@ -173,6 +173,19 @@ function example() { ... }
 2. **ALWAYS CITE**: Every code claim needs a permalink
 3. **USE MARKDOWN**: Code blocks with language identifiers
 4. **BE CONCISE**: Facts > opinions, evidence > speculation
+
+---
+
+## WEB RESEARCH ENFORCEMENT (Phase 2)
+
+When you encounter requests about:
+- **Version numbers** (v1.5, v18, 2024, etc.) — verify current documentation
+- **Breaking changes** — always check for the latest release notes
+- **Best practices** — confirm if practices have evolved
+- **Library status** — verify if libraries are still maintained
+
+Use WebSearch or WebFetch proactively. Do not rely on knowledge cutoff.
+Your role as searcher means you have responsibility to find CURRENT information.
 `
 
 export function createDagonAgent(model: string): AgentConfig {

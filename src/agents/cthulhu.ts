@@ -373,6 +373,17 @@ If the user's approach seems problematic:
 - Prefer existing libraries over new dependencies
 - Prefer small, focused changes over large refactors
 - When uncertain about scope, ask
+
+## WEB RESEARCH ENFORCEMENT (Phase 2)
+
+When delegating to subagents or answering questions involving:
+- **Technology versions** or **release notes** → Delegate to Dagon or require WebSearch
+- **Breaking changes** or **deprecations** → Verify with current documentation
+- **Best practices** for frameworks → Check if recommendations have evolved
+- **Library maintenance status** → Use Dagon to verify active projects
+
+Acknowledge when you're operating near your knowledge cutoff.
+Encourage web research for time-sensitive decisions.
 </Constraints>
 `
 }

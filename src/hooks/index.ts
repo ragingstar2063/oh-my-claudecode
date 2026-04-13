@@ -8,6 +8,8 @@ export { WRITE_GUARD_HOOK_SCRIPT, getWriteGuardHookConfig } from "./write-guard.
 export { CTHULHU_AUTO_HOOK_SCRIPT, getCthulhuAutoHookConfig } from "./cthulhu-auto.js"
 export { MEMORY_OVERRIDE_HOOK_SCRIPT, getMemoryOverrideHookConfig } from "./memory-override.js"
 export { YITH_CAPTURE_HOOK_SCRIPT, getYithCaptureHookConfig } from "./yith-capture.js"
+export { WEB_RESEARCH_DETECTOR_HOOK_SCRIPT, getWebResearchDetectorHookConfig } from "./web-research-hook.js"
+export { DESIGN_DETECTOR_HOOK_SCRIPT, getDesignDetectorHookConfig } from "./design-detector-hook.js"
 
 export interface HookDefinition {
   name: HookName
@@ -49,6 +51,14 @@ import {
   YITH_CAPTURE_HOOK_SCRIPT,
   getYithCaptureHookConfig,
 } from "./yith-capture.js"
+import {
+  WEB_RESEARCH_DETECTOR_HOOK_SCRIPT,
+  getWebResearchDetectorHookConfig,
+} from "./web-research-hook.js"
+import {
+  DESIGN_DETECTOR_HOOK_SCRIPT,
+  getDesignDetectorHookConfig,
+} from "./design-detector-hook.js"
 
 /** All hook definitions for the plugin */
 export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
@@ -107,6 +117,20 @@ export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
     scriptPath: "~/.claude/hooks/yith-capture.sh",
     scriptContent: YITH_CAPTURE_HOOK_SCRIPT,
     config: getYithCaptureHookConfig(),
+  },
+  {
+    name: "web-research-detector",
+    event: "PreToolUse",
+    scriptPath: "~/.claude/hooks/web-research-detector.sh",
+    scriptContent: WEB_RESEARCH_DETECTOR_HOOK_SCRIPT,
+    config: getWebResearchDetectorHookConfig(),
+  },
+  {
+    name: "design-detector",
+    event: "PreToolUse",
+    scriptPath: "~/.claude/hooks/design-detector.sh",
+    scriptContent: DESIGN_DETECTOR_HOOK_SCRIPT,
+    config: getDesignDetectorHookConfig(),
   },
 ]
 
