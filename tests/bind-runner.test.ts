@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 
 import { createFixtureHome } from "./helpers/fixture-home.js"
 import { createYithArchive } from "../src/features/yith-archive/index.js"
+import type { EmbeddingProvider } from "../src/features/yith-archive/types.js"
 import { KV } from "../src/features/yith-archive/state/schema.js"
 import {
   runBind,
@@ -23,6 +24,35 @@ import { TuiWriter } from "../src/cli/tui.js"
  * injectable fake phase runners so each test can control exactly
  * which phases succeed, fail, or get skipped.
  */
+
+test("YithArchive exposes embeddingProvider with warmUp method", () => {
+  const f = createFixtureHome("archive-provider-exposed")
+  try {
+    const archive = createYithArchive({ dataDir: f.yithDataDir })
+    try {
+      assert.ok(
+        archive.embeddingProvider,
+        "embeddingProvider should be exposed on archive handle",
+      )
+      const provider = archive.embeddingProvider as EmbeddingProvider
+      assert.equal(
+        provider.name,
+        "local:nomic-embed-text-v1.5",
+        "provider name should be set",
+      )
+      assert.equal(provider.dimensions, 768, "provider dimensions should be 768")
+      assert.equal(
+        typeof provider.warmUp,
+        "function",
+        "provider should have warmUp method",
+      )
+    } finally {
+      archive.shutdown().catch(() => {})
+    }
+  } finally {
+    f.cleanup()
+  }
+})
 
 function fakePhase(
   name: BindPhase,
@@ -256,6 +286,53 @@ test("runBind resumes a failed phase on a subsequent call", async () => {
       assert.ok(
         secondRunCalls.includes("sisyphus_migrate"),
         "later phases should run after retry succeeds",
+      )
+    } finally {
+      await archive.shutdown()
+    }
+  } finally {
+    f.cleanup()
+  }
+})
+
+test("runBind auto-retries phases that completed via skip", async () => {
+  const f = createFixtureHome("runbind-skip-retry")
+  try {
+    const archive = createYithArchive({ dataDir: f.yithDataDir })
+    const { tui } = captureTui()
+    const firstRunCalls: BindPhase[] = []
+    const secondRunCalls: BindPhase[] = []
+    try {
+      // First run: embedding_download returns skipped=true (simulating
+      // the old bug where provider wasn't wired up).
+      const phasesA: PhaseRunner[] = BIND_PHASE_ORDER.map((name) =>
+        fakePhase(name, {
+          call: () => {
+            firstRunCalls.push(name)
+          },
+          returnDetails:
+            name === "embedding_download"
+              ? { skipped: true, reason: "test: no provider" }
+              : undefined,
+        }),
+      )
+      await runBind({ archive, tui, phases: phasesA })
+      assert.ok(firstRunCalls.includes("embedding_download"))
+
+      // Second run (resume): embedding_download should be retried
+      // even though it "completed" before, because details.skipped=true.
+      const phasesB: PhaseRunner[] = BIND_PHASE_ORDER.map((name) =>
+        fakePhase(name, {
+          call: () => {
+            secondRunCalls.push(name)
+          },
+        }),
+      )
+      await runBind({ archive, tui, phases: phasesB })
+
+      assert.ok(
+        secondRunCalls.includes("embedding_download"),
+        "phase with skipped=true should be retried on resume",
       )
     } finally {
       await archive.shutdown()

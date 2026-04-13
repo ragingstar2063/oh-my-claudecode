@@ -16,7 +16,7 @@ export type ClaudeModel = z.infer<typeof ClaudeModelSchema>
 
 // ─── Agent Names ──────────────────────────────────────────────────────────────
 
-/** The 11 Elder God agents */
+/** The 12 Elder God agents */
 export const BuiltinAgentNameSchema = z.enum([
   "cthulhu",          // main orchestrator
   "nyarlathotep",     // deep autonomous worker
@@ -29,6 +29,7 @@ export const BuiltinAgentNameSchema = z.enum([
   "tsathoggua",       // code quality reviewer
   "shoggoth",         // fast codebase grepper
   "the-deep-one",     // vision agent
+  "the-artisan",      // frontend design specialist
 ])
 
 export type BuiltinAgentName = z.infer<typeof BuiltinAgentNameSchema>
@@ -73,6 +74,7 @@ export const AgentOverridesSchema = z.object({
   tsathoggua: AgentOverrideConfigSchema.optional(),
   shoggoth: AgentOverrideConfigSchema.optional(),
   "the-deep-one": AgentOverrideConfigSchema.optional(),
+  "the-artisan": AgentOverrideConfigSchema.optional(),
 }).catchall(AgentOverrideConfigSchema)
 
 export type AgentOverrides = z.infer<typeof AgentOverridesSchema>
@@ -84,7 +86,7 @@ export const BuiltinCategoryNameSchema = z.enum([
   "quick",       // Fast single-file tasks
   "advisor",     // Consultation and architecture
   "explorer",    // Search and discovery
-  "artisan",     // Creative / writing tasks
+  "artisan",     // Design / frontend specialization
   "watcher",     // Monitoring / verification
 ])
 
@@ -207,6 +209,32 @@ export const GitKeeperConfigSchema = z.object({
   git_env_prefix: z.string().default("ELDER_GODS=1"),
 })
 
+// ─── Three-Pillar Improvement Config Schemas ──────────────────────────────
+
+export const WebResearchDetectorConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  min_confidence: z.enum(["must", "should", "maybe"]).optional(),
+  trigger_types: z.array(z.string()).optional(),
+})
+
+export type WebResearchDetectorConfig = z.infer<typeof WebResearchDetectorConfigSchema>
+
+export const TypeSafetyLinterConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  rules: z.record(z.string(), z.enum(["error", "warn", "info"])).optional(),
+  ignore_patterns: z.array(z.string()).optional(),
+})
+
+export type TypeSafetyLinterConfig = z.infer<typeof TypeSafetyLinterConfigSchema>
+
+export const FrontendDesignConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  min_confidence: z.enum(["high", "medium", "low"]).optional(),
+  auto_route: z.boolean().default(false),
+})
+
+export type FrontendDesignConfig = z.infer<typeof FrontendDesignConfigSchema>
+
 // ─── Root Config Schema ───────────────────────────────────────────────────────
 
 export const OhMyClaudeCodeConfigSchema = z.object({
@@ -257,6 +285,11 @@ export const OhMyClaudeCodeConfigSchema = z.object({
     git_env_prefix: "ELDER_GODS=1",
   }),
   experimental: ExperimentalConfigSchema.optional(),
+
+  // Three-pillar improvements (all disabled by default)
+  web_research: WebResearchDetectorConfigSchema.optional(),
+  type_safety: TypeSafetyLinterConfigSchema.optional(),
+  frontend_design: FrontendDesignConfigSchema.optional(),
 
   /** Migration tracking — prevents re-applying migrations */
   _migrations: z.array(z.string()).optional(),

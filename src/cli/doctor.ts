@@ -193,10 +193,9 @@ export async function runDoctor(projectDirectory: string = process.cwd()): Promi
   )
 
   // ── Check 9: Yith MCP server registered in ~/.claude.json ─────────────────
-  // Claude Code reads user-level MCP servers from ~/.claude.json top-
-  // level `mcpServers`, NOT from ~/.claude/settings.json. Check the
-  // right file or the report is meaningless. Also warn if a stale
-  // entry still exists in settings.json (old buggy install).
+  // CRITICAL: Claude Code reads user-level MCP servers from ~/.claude.json
+  // ONLY (top-level `mcpServers` key). NOT from settings.json. Settings.json
+  // is for hooks only; MCP goes in ~/.claude.json. Must check the right file.
   const claudeJsonExists = fs.existsSync(CLAUDE_JSON_PATH)
   if (claudeJsonExists) {
     try {
@@ -246,6 +245,9 @@ export async function runDoctor(projectDirectory: string = process.cwd()): Promi
       const settings = JSON.parse(
         fs.readFileSync(SETTINGS_PATH, "utf-8"),
       ) as Record<string, unknown>
+      // Warn if an old buggy install left yith-archive in settings.json.
+      // MCP servers should NEVER be in settings.json — only in ~/.claude.json.
+      // This check only exists to help users clean up from the v0.2.x bug.
       const stale = (settings.mcpServers as
         | Record<string, unknown>
         | undefined)?.[MCP_SERVER_NAME]
@@ -254,7 +256,7 @@ export async function runDoctor(projectDirectory: string = process.cwd()): Promi
           name: "Legacy MCP entry",
           status: "warn",
           message:
-            "Stale yith-archive entry in ~/.claude/settings.json — run: oh-my-claudecode install (will auto-clean)",
+            "Stale yith-archive entry in ~/.claude/settings.json (v0.2.x bug) — run: oh-my-claudecode install (will auto-clean)",
         })
       }
     } catch {

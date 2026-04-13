@@ -92,6 +92,7 @@ program
     "1h",
   )
   .option("--force <phase>", "Re-run a specific phase even if already completed")
+  .option("--force-all", "Reset every phase to pending and re-run the full ritual")
   .option(
     "--claude-only",
     "Run only the claude_transcripts phase. Used by the Stop hook for fast per-tick ingestion.",
@@ -113,6 +114,7 @@ program
     installCron?: boolean
     interval?: string
     force?: string
+    forceAll?: boolean
     claudeOnly?: boolean
     compressOnly?: boolean
     background?: boolean
@@ -195,7 +197,16 @@ program
       await runBind({
         archive,
         tui,
-        force: options.force
+        force: options.forceAll
+          ? [
+              "embedding_download",
+              "claude_transcripts",
+              "opencode_import",
+              "sisyphus_migrate",
+              "preliminary_seed",
+              "pending_compression_trigger",
+            ]
+          : options.force
           ? [
               options.force as
                 | "embedding_download"

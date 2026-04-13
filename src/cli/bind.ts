@@ -204,9 +204,19 @@ export async function runBind(opts: RunBindOptions): Promise<BindState> {
   const phasesToRun =
     onlyPhases && onlyPhases.length > 0
       ? orderedEligible
-      : orderedEligible.filter(
-          (p) => state.phases[p].status !== "completed",
-        )
+      : orderedEligible.filter((p) => {
+          const rec = state.phases[p]
+          if (rec.status !== "completed") return true
+          // Auto-retry phases that "completed" via skip — e.g., a
+          // prior run skipped embedding_download because the provider
+          // wasn't wired up, or skipped opencode_import because the
+          // db didn't exist yet. On resume we want to re-check these
+          // so the user doesn't need `--force` when a fix lands.
+          const details = rec.details as
+            | { skipped?: boolean }
+            | undefined
+          return details?.skipped === true
+        })
 
   for (const phase of phasesToRun) {
     // When unscoped, stop at the first incomplete phase and fall
@@ -376,19 +386,7 @@ export function defaultPhaseRunners(): PhaseRunner[] {
     {
       name: "embedding_download",
       async run({ archive, tui }) {
-        const provider = (archive as unknown as {
-          embeddingProvider?: {
-            warmUp?: (opts?: {
-              onProgress?: (e: {
-                phase: string
-                message?: string
-                loaded?: number
-                total?: number
-              }) => void
-            }) => Promise<void>
-            name?: string
-          }
-        }).embeddingProvider
+        const provider = archive.embeddingProvider
         if (!provider || typeof provider.warmUp !== "function") {
           tui.line(
             renderStatusLine(
@@ -458,6 +456,9 @@ export function defaultPhaseRunners(): PhaseRunner[] {
             projectCwd,
             allProjects: false,
             dryRun: false,
+            // Scoped capture from the Stop hook is a catch-up tick —
+            // cap at 1k so a huge project can't block an assistant turn.
+            maxObservations: 1000,
           })) as {
             observationsCreated?: number
             transcriptsScanned?: number
@@ -482,6 +483,10 @@ export function defaultPhaseRunners(): PhaseRunner[] {
         const result = (await archive.sdk.trigger("mem::backfill-sessions", {
           allProjects: true,
           dryRun: false,
+          // The binding ritual is a one-shot full history import —
+          // give it an effectively unbounded budget. Individual users
+          // with 90k+ observations still finish in a few minutes.
+          maxObservations: Number.MAX_SAFE_INTEGER,
         })) as {
           totalProjects?: number
           totalObservationsCreated?: number

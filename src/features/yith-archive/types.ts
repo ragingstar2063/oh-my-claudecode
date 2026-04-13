@@ -190,11 +190,27 @@ export interface CircuitBreakerState {
   openedAt: number | null;
 }
 
+export interface EmbeddingWarmUpEvent {
+  phase: "downloading" | "loading" | "ready" | "error";
+  message?: string;
+  loaded?: number;
+  total?: number;
+}
+
 export interface EmbeddingProvider {
   name: string;
   dimensions: number;
   embed(text: string): Promise<Float32Array>;
   embedBatch(texts: string[]): Promise<Float32Array[]>;
+  /**
+   * Optional: eagerly fetch the model + tokenizer and stream progress
+   * events. Used by the bind ritual's Phase I to show a download
+   * progress bar on first run. Providers that don't need warm-up
+   * (HTTP APIs) can omit this method entirely.
+   */
+  warmUp?(opts?: {
+    onProgress?: (e: EmbeddingWarmUpEvent) => void;
+  }): Promise<void>;
 }
 
 export interface MemoryRelation {

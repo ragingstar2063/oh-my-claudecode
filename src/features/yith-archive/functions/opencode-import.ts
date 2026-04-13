@@ -165,14 +165,29 @@ interface PartRow {
 }
 
 /**
- * Run a SELECT query against the opencode.db using the sqlite3 CLI
- * in -json mode and return the parsed rows. The query should return
- * columns matching `PartRow` — see `SCAN_PARTS_SQL` below.
+ * Chunk size for paginated sqlite reads. A real opencode database can
+ * hold 90k+ parts totalling several hundred MB of JSON — a single
+ * `sqlite3 -json` dump blows past any reasonable maxBuffer and trips
+ * `spawnSync ENOBUFS`. Paginating in 1000-row chunks keeps each call
+ * well under 10 MB and makes the import naturally resumable.
  */
-function querySqlite(dbPath: string, sql: string): PartRow[] {
+const SCAN_CHUNK_SIZE = 1000
+
+/**
+ * Fetch a single page of parts via the sqlite3 CLI. `sql` should be
+ * the base query; this helper appends `LIMIT ? OFFSET ?`. Returns
+ * parsed rows or an empty array at end-of-data.
+ */
+function querySqliteChunk(
+  dbPath: string,
+  baseSql: string,
+  offset: number,
+  chunkSize: number,
+): PartRow[] {
+  const sql = `${baseSql}\n  LIMIT ${chunkSize} OFFSET ${offset}`
   const out = execFileSync("sqlite3", [dbPath, "-json", sql], {
     encoding: "utf-8",
-    maxBuffer: 256 * 1024 * 1024, // 256 MB for large imports
+    maxBuffer: 64 * 1024 * 1024,
   })
   if (!out.trim()) return []
   try {
@@ -184,7 +199,27 @@ function querySqlite(dbPath: string, sql: string): PartRow[] {
   }
 }
 
-/** The join query that pulls everything we need in one pass. */
+/**
+ * Iterate every part row in the database as a generator, pulling
+ * `SCAN_CHUNK_SIZE` rows at a time. Stops when a short chunk is
+ * returned (EOF).
+ */
+function* iterPartRows(
+  dbPath: string,
+  chunkSize: number = SCAN_CHUNK_SIZE,
+): Generator<PartRow> {
+  let offset = 0
+  while (true) {
+    const chunk = querySqliteChunk(dbPath, SCAN_PARTS_SQL, offset, chunkSize)
+    if (chunk.length === 0) return
+    for (const row of chunk) yield row
+    if (chunk.length < chunkSize) return
+    offset += chunkSize
+  }
+}
+
+/** The join query that pulls everything we need in one pass. The
+ *  caller appends `LIMIT/OFFSET` to paginate — see `querySqliteChunk`. */
 const SCAN_PARTS_SQL = `
   SELECT
     p.id AS part_id,
@@ -247,9 +282,15 @@ export function registerOpencodeImportFunction(
         }
       }
 
-      let rows: PartRow[]
+      const sessionsSeen = new Set<string>()
+      const projectsSeen = new Set<string>()
+      let observationsCreated = 0
+      let observationsSkipped = 0
+      const errors: string[] = []
+
+      let rowIter: Generator<PartRow>
       try {
-        rows = querySqlite(dbPath, SCAN_PARTS_SQL)
+        rowIter = iterPartRows(dbPath)
       } catch (err) {
         return {
           success: false,
@@ -260,98 +301,103 @@ export function registerOpencodeImportFunction(
         }
       }
 
-      const sessionsSeen = new Set<string>()
-      const projectsSeen = new Set<string>()
-      let observationsCreated = 0
-      let observationsSkipped = 0
-      const errors: string[] = []
-
-      for (const row of rows) {
-        if (observationsCreated >= limit) {
-          errors.push(`limit ${limit} reached — remaining parts deferred`)
-          break
-        }
-        sessionsSeen.add(row.session_id)
-        projectsSeen.add(row.project_worktree)
-
-        // Load per-session cursor so incremental runs skip rows we've
-        // already processed (based on time_created).
-        const cursorKey = `${dbPath}|${row.session_id}`
-        const cursor = await kv
-          .get<OpencodeCursor>(KV.opencodeImportCursors, cursorKey)
-          .catch(() => null)
-        if (cursor && row.time_created <= cursor.lastPartTime) {
-          // Already processed this row on a prior run. Count as
-          // skipped so the caller can see "N rows were deduplicated"
-          // in the result — matches how the Claude Code backfill
-          // reports idempotent re-runs.
-          observationsSkipped++
-          continue
-        }
-
-        let partData: OpencodePartData
-        try {
-          partData = JSON.parse(row.part_data) as OpencodePartData
-        } catch {
-          errors.push(`malformed part data in ${row.part_id}`)
-          continue
-        }
-
-        let messageRole: string | undefined
-        try {
-          const msgData = JSON.parse(row.message_data) as { role?: string }
-          messageRole = msgData.role
-        } catch {
-          /* non-fatal */
-        }
-
-        const obs = opencodePartToRawObservation({
-          partId: row.part_id,
-          messageId: row.message_id,
-          sessionId: row.session_id,
-          partData,
-          messageRole,
-          timestamp: new Date(row.time_created).toISOString(),
-        })
-        if (!obs) continue
-
-        // Idempotency via existing-ID check.
-        const existing = await kv
-          .get(KV.observations(obs.sessionId), obs.id)
-          .catch(() => null)
-        if (existing) {
-          observationsSkipped++
-          continue
-        }
-
-        if (!dryRun) {
-          // Upsert Session record tagged with the opencode worktree.
-          const existingSession = await kv
-            .get<Session>(KV.sessions, obs.sessionId)
-            .catch(() => null)
-          if (!existingSession) {
-            const session: Session = {
-              id: obs.sessionId,
-              project: row.project_worktree,
-              cwd: row.session_directory || row.project_worktree,
-              startedAt: new Date(row.time_created).toISOString(),
-              status: "completed",
-              observationCount: 0,
-            }
-            await kv.set(KV.sessions, obs.sessionId, session)
+      let limitHit = false
+      try {
+        for (const row of rowIter) {
+          if (observationsCreated >= limit) {
+            limitHit = true
+            break
           }
-          await kv.set(KV.observations(obs.sessionId), obs.id, obs)
-          await bumpPendingCompression(kv, 1)
+          sessionsSeen.add(row.session_id)
+          projectsSeen.add(row.project_worktree)
 
-          // Advance the per-session cursor.
-          await kv.set(KV.opencodeImportCursors, cursorKey, {
-            dbPath,
+          // Load per-session cursor so incremental runs skip rows
+          // we've already processed (based on time_created).
+          const cursorKey = `${dbPath}|${row.session_id}`
+          const cursor = await kv
+            .get<OpencodeCursor>(KV.opencodeImportCursors, cursorKey)
+            .catch(() => null)
+          if (cursor && row.time_created <= cursor.lastPartTime) {
+            observationsSkipped++
+            continue
+          }
+
+          let partData: OpencodePartData
+          try {
+            partData = JSON.parse(row.part_data) as OpencodePartData
+          } catch {
+            errors.push(`malformed part data in ${row.part_id}`)
+            continue
+          }
+
+          let messageRole: string | undefined
+          try {
+            const msgData = JSON.parse(row.message_data) as { role?: string }
+            messageRole = msgData.role
+          } catch {
+            /* non-fatal */
+          }
+
+          const obs = opencodePartToRawObservation({
+            partId: row.part_id,
+            messageId: row.message_id,
             sessionId: row.session_id,
-            lastPartTime: row.time_created,
-            updatedAt: new Date().toISOString(),
-          } satisfies OpencodeCursor)
+            partData,
+            messageRole,
+            timestamp: new Date(row.time_created).toISOString(),
+          })
+          if (!obs) continue
+
+          // Idempotency via existing-ID check.
+          const existing = await kv
+            .get(KV.observations(obs.sessionId), obs.id)
+            .catch(() => null)
+          if (existing) {
+            observationsSkipped++
+            continue
+          }
+
+          if (!dryRun) {
+            const existingSession = await kv
+              .get<Session>(KV.sessions, obs.sessionId)
+              .catch(() => null)
+            if (!existingSession) {
+              const session: Session = {
+                id: obs.sessionId,
+                project: row.project_worktree,
+                cwd: row.session_directory || row.project_worktree,
+                startedAt: new Date(row.time_created).toISOString(),
+                status: "completed",
+                observationCount: 0,
+              }
+              await kv.set(KV.sessions, obs.sessionId, session)
+            }
+            await kv.set(KV.observations(obs.sessionId), obs.id, obs)
+            await bumpPendingCompression(kv, 1)
+
+            await kv.set(KV.opencodeImportCursors, cursorKey, {
+              dbPath,
+              sessionId: row.session_id,
+              lastPartTime: row.time_created,
+              updatedAt: new Date().toISOString(),
+            } satisfies OpencodeCursor)
+          }
+          observationsCreated++
         }
-        observationsCreated++
+      } catch (err) {
+        return {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          observationsCreated,
+          sessionsScanned: sessionsSeen.size,
+          projectsScanned: projectsSeen.size,
+          observationsSkipped,
+          errors,
+        }
+      }
+
+      if (limitHit) {
+        errors.push(`limit ${limit} reached — remaining parts deferred`)
       }
 
       logger.info("opencode import complete", {

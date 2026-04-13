@@ -80,9 +80,10 @@ The installer asks a few questions and then:
 
 1. Drops hook scripts into `~/.claude/hooks/`
 2. Registers them in `~/.claude/settings.json`
-3. Copies slash command definitions to `~/.claude/commands/`
-4. Creates `~/.claude/oh-my-claudecode.jsonc` with sensible defaults
-5. Leaves your existing Claude Code config intact (backup is made)
+3. Registers the Yith Archive MCP server in `~/.claude.json` 
+4. Copies slash command definitions to `~/.claude/commands/`
+5. Creates `~/.claude/oh-my-claudecode.jsonc` with sensible defaults
+6. Leaves your existing Claude Code config intact (backup is made)
 
 Non-interactive install (for CI or scripts):
 

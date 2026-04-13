@@ -1,0 +1,7 @@
+{
+  "active": false,
+  "iteration": 0,
+  "maxIterations": 5,
+  "completionPromise": "A fresh independent review agent reads the full session diff (including all Phase 1-4 review fixes: C1 centralized putMemory/deleteMemory routing across all 12+ memory-writer sites, C2/I1/I5 pipeline try/catch and sdk threading, I2 enrich-session-step intermediate state restructure, I3 vector index wiring via registerVectorIndex, M1-M4 and N1-N3 minor fixes) and reports ZERO new critical or important findings. `npx tsc --noEmit` exits 0. The allfix regression smoke (C1, I1+N1, I2, I3, reflect wire-in, M1, M2, M4) passes 8/8. Any critical/important issues the review agent surfaces get fixed in the same iteration before declaring done.",
+  "strategy": "continue"
+}

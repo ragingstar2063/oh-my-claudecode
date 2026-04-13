@@ -229,6 +229,63 @@ test("mem::import-opencode reads a fixture DB and writes raw observations", { sk
   }
 })
 
+/**
+ * Build a fixture DB with `count` text parts so we cross the
+ * SCAN_CHUNK_SIZE (1000) boundary and exercise the paginated fetch
+ * path. Regression guard against the `spawnSync sqlite3 ENOBUFS`
+ * error that hit real users with 90k+ parts.
+ */
+function buildLargeFixtureDb(count: number): string {
+  const dir = join(tmpdir(), `opencode-large-${Date.now()}`)
+  mkdirSync(dir, { recursive: true })
+  const dbPath = join(dir, "opencode.db")
+  const rows: string[] = []
+  for (let i = 0; i < count; i++) {
+    const t = 1769000000000 + i
+    rows.push(
+      `('part_${i}', 'msg_1', 'sess_1', ${t}, ${t}, '{"type":"text","text":"row ${i}"}')`,
+    )
+  }
+  const seed = `
+    CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL, name TEXT, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+    CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, directory TEXT NOT NULL, title TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+    CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+    CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+    INSERT INTO project VALUES ('proj_1', '/home/alice/big', 'big', 1769000000000, 1769000000000);
+    INSERT INTO session VALUES ('sess_1', 'proj_1', '/home/alice/big', 'Big session', 1769000000000, 1769000000000);
+    INSERT INTO message VALUES ('msg_1', 'sess_1', 1769000000000, 1769000000000, '{"role":"user"}');
+    INSERT INTO part VALUES ${rows.join(",\n")};
+  `
+  execFileSync("sqlite3", [dbPath], { input: seed })
+  return dbPath
+}
+
+test("mem::import-opencode paginates past the chunk boundary", { skip: !isSqlite3Available() }, async () => {
+  const f = createFixtureHome("oc-import-large")
+  // 2500 parts crosses two 1000-row chunk boundaries and rules out
+  // the single-shot `spawnSync ENOBUFS` failure mode.
+  const dbPath = buildLargeFixtureDb(2500)
+  try {
+    const archive = createYithArchive({ dataDir: f.yithDataDir })
+    try {
+      const result = (await archive.sdk.trigger("mem::import-opencode", {
+        dbPath,
+        limit: 5000,
+      })) as { success: boolean; observationsCreated: number }
+      assert.equal(result.success, true)
+      assert.equal(result.observationsCreated, 2500)
+
+      const obs = await archive.kv.list(KV.observations("sess_1"))
+      assert.equal(obs.length, 2500)
+    } finally {
+      await archive.shutdown()
+    }
+  } finally {
+    if (existsSync(dbPath)) unlinkSync(dbPath)
+    f.cleanup()
+  }
+})
+
 test("mem::import-opencode is idempotent — second run creates zero new obs", { skip: !isSqlite3Available() }, async () => {
   const f = createFixtureHome("oc-import-idem")
   const dbPath = buildFixtureDb()

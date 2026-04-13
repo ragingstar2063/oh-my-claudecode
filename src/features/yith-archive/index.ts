@@ -37,6 +37,7 @@ import { HybridSearch } from "./state/hybrid-search.js"
 import { IndexPersistence } from "./state/index-persistence.js"
 import { logger } from "./state/logger.js"
 import { VERSION } from "./version.js"
+import type { EmbeddingProvider } from "./types.js"
 
 import { registerPrivacyFunction } from "./functions/privacy.js"
 import { registerObserveFunction } from "./functions/observe.js"
@@ -158,6 +159,13 @@ export interface YithArchiveHandle {
    * machine functions across tool calls.
    */
   workPacketStore: WorkPacketStore
+  /**
+   * The local embedding provider (e.g. xenova nomic-embed-text) if one
+   * is configured, or `null` when the archive is running in BM25-only
+   * mode. Exposed so the CLI bind ritual can call `.warmUp()` to
+   * trigger the model download progress on first run.
+   */
+  embeddingProvider: EmbeddingProvider | null
   /** Persist all pending state to disk and release timers. */
   shutdown(): Promise<void>
 
@@ -444,6 +452,7 @@ export function createYithArchive(
     version: VERSION,
     hasLLMProvider: llmAvailable,
     workPacketStore,
+    embeddingProvider,
     remember: (data) => sdk.trigger("mem::remember", data),
     recall: (data) => sdk.trigger("mem::smart-search", data),
     search: (data) => sdk.trigger("mem::smart-search", data),
