@@ -2,15 +2,15 @@
  * Design Detector Hook
  *
  * PreToolUse hook that detects when user messages indicate a frontend/design task.
- * Injects routing hint suggesting The Artisan for design-focused work.
+ * Injects routing hint suggesting Nodens for design-focused work.
  *
- * When triggered, it suggests delegating to The Artisan agent which specializes
+ * When triggered, it suggests delegating to Nodens agent which specializes
  * in design methodology and frontend implementation.
  */
 
 export const DESIGN_DETECTOR_HOOK_SCRIPT = `#!/usr/bin/env bash
 # oh-my-claudecode: Design Detector PreToolUse Hook
-# Fires on tool use to detect design tasks and suggest Artisan routing.
+# Fires on tool use to detect design tasks and suggest Nodens routing.
 
 set -euo pipefail
 
@@ -22,8 +22,8 @@ CLAUDE_API_PROMPT="\${CLAUDE_API_PROMPT:-}"
 
 if echo "$CLAUDE_API_PROMPT" | grep -qiE '\\b(component|ui|interface|design|button|form|modal|card|layout|responsive|css|tailwind|animation|accessibility|wcag|aria)\\b'; then
   echo "[DESIGN TASK DETECTED]"
-  echo "This appears to be a design/frontend task. Consider delegating to The Artisan:"
-  echo "  • The Artisan specializes in design methodology (intent → spec → impl → polish)"
+  echo "This appears to be a design/frontend task. Consider delegating to Nodens:"
+  echo "  • Nodens (God of Craftsmanship) specializes in design methodology (intent → spec → impl → polish)"
   echo "  • Expertise in accessibility, responsive design, and design systems"
   echo "  • Recommended for UI components, layouts, design systems, and frontend polish"
   echo ""

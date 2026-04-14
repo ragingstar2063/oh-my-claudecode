@@ -12,7 +12,7 @@ import { createNyarlathotepAgent, NYARLATHOTEP_PROMPT_METADATA } from "./nyarlat
 import { createAzathothAgent, AZATHOTH_PROMPT_METADATA } from "./azathoth.js"
 import { createShubNiggurathAgent, SHUB_NIGGURATH_PROMPT_METADATA } from "./shub-niggurath.js"
 import { createDeepOneAgent, DEEP_ONE_PROMPT_METADATA } from "./the-deep-one.js"
-import { createArtisanAgent, THE_ARTISAN_PROMPT_METADATA } from "./the-artisan.js"
+import { createNodenAgent, NODENS_PROMPT_METADATA } from "./nodens.js"
 import { resolveAgentModel } from "../shared/model-resolution.js"
 import { deepMerge } from "../shared/deep-merge.js"
 
@@ -29,7 +29,7 @@ export const AGENT_METADATA_MAP: Record<string, AgentPromptMetadata> = {
   azathoth: AZATHOTH_PROMPT_METADATA,
   "shub-niggurath": SHUB_NIGGURATH_PROMPT_METADATA,
   "the-deep-one": DEEP_ONE_PROMPT_METADATA,
-  "the-artisan": THE_ARTISAN_PROMPT_METADATA,
+  nodens: NODENS_PROMPT_METADATA,
 }
 
 export interface BuildAgentsOptions {
@@ -172,10 +172,10 @@ export function buildBuiltinAgents(options: BuildAgentsOptions = {}): Record<str
     result["the-deep-one"] = applyOverride(config, "the-deep-one")
   }
 
-  // ── The Artisan (frontend design) ────────────────────────────────────────────
-  if (isEnabled("the-artisan")) {
-    const config = createArtisanAgent(resolveModel("the-artisan"))
-    result["the-artisan"] = applyOverride(config, "the-artisan")
+  // ── Nodens (frontend design) ────────────────────────────────────────────────
+  if (isEnabled("nodens")) {
+    const config = createNodenAgent(resolveModel("nodens"))
+    result["nodens"] = applyOverride(config, "nodens")
   }
 
   return result
@@ -194,7 +194,7 @@ function getAgentDescription(name: string): string {
     azathoth: "First-message planner. Initial context gathering.",
     "shub-niggurath": "Strategic planner. Interview → scope → plan.",
     "the-deep-one": "Vision specialist. Analyzes images and visual content.",
-    "the-artisan": "Frontend design specialist. Intent → spec → impl → polish methodology.",
+    nodens: "Nodens — God of Craftsmanship. Frontend design specialist. Intent → spec → impl → polish.",
   }
   return descriptions[name] ?? "Specialized agent."
 }

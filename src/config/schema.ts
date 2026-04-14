@@ -29,7 +29,7 @@ export const BuiltinAgentNameSchema = z.enum([
   "tsathoggua",       // code quality reviewer
   "shoggoth",         // fast codebase grepper
   "the-deep-one",     // vision agent
-  "the-artisan",      // frontend design specialist
+  "nodens",           // frontend design specialist
 ])
 
 export type BuiltinAgentName = z.infer<typeof BuiltinAgentNameSchema>
@@ -74,7 +74,7 @@ export const AgentOverridesSchema = z.object({
   tsathoggua: AgentOverrideConfigSchema.optional(),
   shoggoth: AgentOverrideConfigSchema.optional(),
   "the-deep-one": AgentOverrideConfigSchema.optional(),
-  "the-artisan": AgentOverrideConfigSchema.optional(),
+  nodens: AgentOverrideConfigSchema.optional(),
 }).catchall(AgentOverrideConfigSchema)
 
 export type AgentOverrides = z.infer<typeof AgentOverridesSchema>
@@ -86,7 +86,7 @@ export const BuiltinCategoryNameSchema = z.enum([
   "quick",       // Fast single-file tasks
   "advisor",     // Consultation and architecture
   "explorer",    // Search and discovery
-  "artisan",     // Design / frontend specialization
+  "craftsmanship", // Design / frontend specialization
   "watcher",     // Monitoring / verification
 ])
 
@@ -214,25 +214,19 @@ export const GitKeeperConfigSchema = z.object({
 // ─── Three-Pillar Improvement Config Schemas ──────────────────────────────
 
 export const WebResearchDetectorConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  min_confidence: z.enum(["must", "should", "maybe"]).optional(),
-  trigger_types: z.array(z.string()).optional(),
+  enabled: z.boolean().default(true),
 })
 
 export type WebResearchDetectorConfig = z.infer<typeof WebResearchDetectorConfigSchema>
 
 export const TypeSafetyLinterConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  rules: z.record(z.string(), z.enum(["error", "warn", "info"])).optional(),
-  ignore_patterns: z.array(z.string()).optional(),
+  enabled: z.boolean().default(true),
 })
 
 export type TypeSafetyLinterConfig = z.infer<typeof TypeSafetyLinterConfigSchema>
 
 export const FrontendDesignConfigSchema = z.object({
-  enabled: z.boolean().default(false),
-  min_confidence: z.enum(["high", "medium", "low"]).optional(),
-  auto_route: z.boolean().default(false),
+  enabled: z.boolean().default(true),
 })
 
 export type FrontendDesignConfig = z.infer<typeof FrontendDesignConfigSchema>
@@ -288,7 +282,7 @@ export const OhMyClaudeCodeConfigSchema = z.object({
   }),
   experimental: ExperimentalConfigSchema.optional(),
 
-  // Three-pillar improvements (all disabled by default)
+  // Three-pillar improvements (all enabled by default, set enabled: false to disable)
   web_research: WebResearchDetectorConfigSchema.optional(),
   type_safety: TypeSafetyLinterConfigSchema.optional(),
   frontend_design: FrontendDesignConfigSchema.optional(),

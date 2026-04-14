@@ -33,7 +33,7 @@ test("design-detector hook integration", async (t) => {
 
   await t.test("hook script outputs routing suggestion", () => {
     assert(DESIGN_DETECTOR_HOOK_SCRIPT.includes("[DESIGN TASK DETECTED]"))
-    assert(DESIGN_DETECTOR_HOOK_SCRIPT.includes("The Artisan"))
+    assert(DESIGN_DETECTOR_HOOK_SCRIPT.includes("Nodens"))
   })
 
   await t.test("hook script mentions design methodology", () => {

@@ -2,7 +2,7 @@
  * Design Task Detector
  *
  * Detects when a user message indicates a frontend/design task.
- * Used to route messages to The Artisan subagent.
+ * Used to route messages to Nodens subagent.
  */
 
 /**

@@ -1,20 +1,21 @@
 /**
- * The Artisan — Frontend Design Specialization Agent
+ * Nodens — Frontend Design Specialization Agent
  *
  * A subagent that specializes in frontend and UI/UX design tasks.
  * Guides users through design methodology: intent → spec → implementation → polish
+ * Named after Nodens, Lovecraftian god of craftsmanship and artistry.
  */
 
 import type { AgentConfig, AgentPromptMetadata } from "./types.js"
 import type { AvailableAgent, AvailableSkill, AvailableCategory } from "./types.js"
 
 /**
- * Prompt metadata for The Artisan — instructs Cthulhu orchestrator
+ * Prompt metadata for Nodens — instructs Cthulhu orchestrator
  */
-export const THE_ARTISAN_PROMPT_METADATA: AgentPromptMetadata = {
+export const NODENS_PROMPT_METADATA: AgentPromptMetadata = {
   category: "utility",
   cost: "MODERATE",
-  promptAlias: "The Artisan",
+  promptAlias: "Nodens",
   keyTrigger: "Design, UI/UX, component, interface, layout, accessibility",
   useWhen: [
     "User asks to design or build a component",
@@ -39,7 +40,7 @@ export const THE_ARTISAN_PROMPT_METADATA: AgentPromptMetadata = {
 }
 
 /**
- * System prompt for The Artisan
+ * System prompt for Nodens
  *
  * Guides the agent through a design-first methodology:
  * 1. Intent: Understand what the user wants to build and why
@@ -47,7 +48,7 @@ export const THE_ARTISAN_PROMPT_METADATA: AgentPromptMetadata = {
  * 3. Implementation: Code the component following the spec
  * 4. Polish: Refine, add accessibility, responsive breakpoints, animations
  */
-export const ARTISAN_PROMPT = `You are The Artisan — a frontend design specialization agent within oh-my-claudecode.
+export const NODENS_PROMPT = `You are Nodens — god of craftsmanship, a frontend design specialization agent within oh-my-claudecode.
 
 ## DESIGN PHILOSOPHY
 Your job is to help users craft beautiful, accessible, well-designed interfaces and components.
@@ -106,16 +107,16 @@ Remember: Good design is invisible. Users shouldn't think about the interface �
 Accessibility and performance are features, not afterthoughts.`
 
 /**
- * Factory function to create The Artisan agent configuration
+ * Factory function to create Nodens agent configuration
  *
  * @param model - The Claude model to use for this agent
  * @param availableAgents - List of available agents (for prompt context)
  * @param availableToolNames - List of available tools (for tool config)
  * @param availableSkills - List of available skills (for skill injection)
  * @param availableCategories - List of available categories (for category context)
- * @returns AgentConfig for The Artisan
+ * @returns AgentConfig for Nodens
  */
-export function createArtisanAgent(
+export function createNodenAgent(
   model: string,
   availableAgents?: AvailableAgent[],
   availableToolNames?: string[],
@@ -123,13 +124,13 @@ export function createArtisanAgent(
   availableCategories?: AvailableCategory[],
 ): AgentConfig {
   return {
-    name: "the-artisan",
-    description: "Frontend design specialist — guides users through design methodology: intent → spec → impl → polish",
+    name: "nodens",
+    description: "Nodens — God of Craftsmanship and Design. Guides users through design methodology: intent → spec → impl → polish",
     mode: "subagent",
     model,
     temperature: 0.7, // Slightly creative for design
     maxTokens: 16000,
-    prompt: ARTISAN_PROMPT,
+    prompt: NODENS_PROMPT,
     color: "#FF6B35", // Warm orange for creative/design
     tools: {
       // Read/Write/Edit for working with files
@@ -155,7 +156,7 @@ export function createArtisanAgent(
 /**
  * Export metadata for registration in AGENT_METADATA_MAP
  */
-export const ARTISAN_AGENT_METADATA = {
-  metadata: THE_ARTISAN_PROMPT_METADATA,
-  factory: createArtisanAgent,
+export const NODENS_AGENT_METADATA = {
+  metadata: NODENS_PROMPT_METADATA,
+  factory: createNodenAgent,
 }
