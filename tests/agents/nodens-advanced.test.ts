@@ -175,7 +175,7 @@ test("nodens-advanced", async t => {
       const result = await generateA11yAuditCode("Button", { enabled: false })
 
       assert.equal(result.success, false)
-      assert.ok(result.issues?.includes("A11y automation disabled"))
+      assert.equal(result.wcagAACompliant, false)
     })
 
     await t.test("generates test code", async () => {

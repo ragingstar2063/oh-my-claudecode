@@ -14,7 +14,7 @@ type Pipeline = (
 
 /**
  * Local CPU embeddings via @xenova/transformers. The default model is
- * `nomic-embed-text-v1.5` — chosen for its 8192-token context (critical for
+ * `nomic-ai/nomic-embed-text-v1.5` — chosen for its 8192-token context (critical for
  * session backfill where interaction chunks routinely exceed 512 tokens) and
  * Matryoshka representation learning (lets us truncate the 768-dim vectors
  * to 512/256/128 later without re-embedding).
@@ -42,10 +42,10 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 
   constructor() {
     this.model =
-      getEnvVar("LOCAL_EMBEDDING_MODEL") ?? "Xenova/nomic-embed-text-v1.5";
+      getEnvVar("LOCAL_EMBEDDING_MODEL") ?? "nomic-ai/nomic-embed-text-v1.5";
     const dimsEnv = getEnvVar("LOCAL_EMBEDDING_DIMS");
     this.dimensions = dimsEnv ? parseInt(dimsEnv, 10) : 768;
-    this.name = `local:${this.model.replace(/^Xenova\//, "")}`;
+    this.name = `local:${this.model.replace(/^(Xenova|nomic-ai)\//, "")}`;
   }
 
   /**
