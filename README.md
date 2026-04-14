@@ -131,6 +131,103 @@ On your next session in the same project, steps 4 and the initial memory injecti
 | **The Deep One** | Sonnet | subagent | Vision agent — images, screenshots, diagrams |
 | **Shoggoth** | Haiku | subagent | Fast parallel codebase search |
 
+## Agent Behavior Enhancements (v0.2.6)
+
+v0.2.6 introduces three orthogonal agent behavior improvements, all enabled by default. These pillars extend how agents reason and operate without changing the core delegation model.
+
+### Web Research Enforcement
+
+Agents automatically trigger web search when they encounter queries about:
+- **Version checks**: "v1.0", "Node 18", "2024", "latest"
+- **API updates and breaking changes**: "what changed", "deprecated", "breaking"
+- **Framework release schedules**: "Next.js 15 coming soon", "LTS version"
+- **Security vulnerabilities**: CVE references, vulnerability announcements
+- **Package management**: npm audit patterns, outdated dependencies
+
+Powered by the PreToolUse hook which detects these patterns and injects a Dagon background research agent prompt before the user's message reaches the main orchestrator. Results are available in the context window for the agent to reference.
+
+**Default**: Enabled
+
+**Disable**: Set `web_research.enabled: false` in `~/.claude/oh-my-claudecode.jsonc`
+
+```jsonc
+{
+  "web_research": {
+    "enabled": false
+  }
+}
+```
+
+### TypeScript Type Safety Linting
+
+Automatic validation enforces type safety across the codebase:
+- **Bans `any` types** — forces explicit typing or `unknown` with type guards
+- **Unsafe casts** — flags `as any` and `as unknown` patterns
+- **Missing return types** — detects functions without explicit return type annotations
+- **@ts-ignore without reason** — requires inline comments explaining suppression
+- **Auto-fix support** — safe violations can be fixed automatically via pre-commit hook
+
+The linter runs at pre-commit time and blocks unsafe code from entering the repository. Type safety metrics are exported for CI/CD dashboards to track compliance over time.
+
+**Default**: Enabled
+
+**Disable**: Set `type_safety.enabled: false` in `~/.claude/oh-my-claudecode.jsonc`
+
+```jsonc
+{
+  "type_safety": {
+    "enabled": false
+  }
+}
+```
+
+### Nodens — Design Specialization Agent
+
+A dedicated design agent routes UI/component design tasks and provides:
+- **Accessibility automation**: WCAG compliance testing, keyboard navigation, screen reader support via Axe-core
+- **Responsive design**: Automatically generates component variants for multiple breakpoints
+- **Playwright test generation**: Creates visual regression and interaction tests
+- **Figma integration**: Extracts design tokens (colors, typography, spacing) from Figma files
+- **Vision capability**: Analyzes screenshots and design mockups with Claude Opus
+
+When design-related queries are detected (via the design-detector hook), they are automatically routed to Nodens instead of the general orchestrator. Nodens has a design-first system prompt and specialized tools for component generation, accessibility testing, and design token management.
+
+**Default**: Enabled
+
+**Disable**: Set `frontend_design.enabled: false` in `~/.claude/oh-my-claudecode.jsonc`
+
+```jsonc
+{
+  "frontend_design": {
+    "enabled": false
+  }
+}
+```
+
+### Configuration Examples
+
+Disable all three pillars:
+
+```jsonc
+{
+  "web_research": { "enabled": false },
+  "type_safety": { "enabled": false },
+  "frontend_design": { "enabled": false }
+}
+```
+
+Enable selective behavior (type safety and design, disable web research):
+
+```jsonc
+{
+  "web_research": { "enabled": false },
+  "type_safety": { "enabled": true },
+  "frontend_design": { "enabled": true }
+}
+```
+
+Each pillar is independent — disable any combination without affecting the others. All three are checked and active by default on fresh installs.
+
 ## Yith Archive — persistent cross-session memory
 
 Named for the Great Race of Yith from *The Shadow Out of Time* — mind-transferring archivists who maintain records across time — Yith Archive is OMC's canonical persistent memory subsystem. It is a novel, in-process combined implementation inspired by the broader ecosystem of agent-memory research, rewritten from scratch to fit a single-process Claude Code plugin instead of a multi-client service.
