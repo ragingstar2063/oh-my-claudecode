@@ -22,10 +22,7 @@ test("web-research-background", async t => {
     await t.test("detects tech announcements", () => {
       const matches = detectAdvancedPatterns("Just released React 19 with new features")
       assert.ok(matches.length > 0)
-      assert.match(
-        String(matches[0].type),
-        /TECH_ANNOUNCEMENT|FRAMEWORK_SPECIFIC/
-      )
+      assert.equal(matches[0].type, AdvancedTriggerType.TECH_ANNOUNCEMENT)
     })
 
     await t.test("detects CVE patterns", () => {
@@ -169,8 +166,8 @@ test("web-research-background", async t => {
         timeout_ms: 2000,
       })
 
-      // Give it time to complete
-      await new Promise(resolve => setTimeout(resolve, 300))
+      // Give it time to complete (the simulated work takes ~1000ms)
+      await new Promise(resolve => setTimeout(resolve, 1200))
 
       const status = getBackgroundResearchStatus(spawnResult.taskId)
       assert.ok(status)

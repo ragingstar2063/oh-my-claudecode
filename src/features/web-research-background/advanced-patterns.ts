@@ -82,7 +82,7 @@ const NPM_AUDIT_PATTERNS: Array<{
   confidence: "must" | "should"
 }> = [
   { pattern: /\b(npm\s+audit|npm\s+outdated|dependencies?\s+outdated)\b/i, confidence: "must" },
-  { pattern: /\b(dependency\s+update|package\s+update|outdated\s+packages?)\b/i, confidence: "should" },
+  { pattern: /\b(dependency\s+update|package\s+update|outdated\s+packages?|packages?\s+are\s+outdated)\b/i, confidence: "should" },
   { pattern: /\b(critical\s+vulnerabilit|high\s+risk\s+packages?)\b/i, confidence: "must" },
 ]
 
