@@ -266,7 +266,6 @@ export async function generateA11yAuditCode(
       violations: [],
       passes: [],
       wcagAACompliant: false,
-      issues: ["A11y automation disabled"],
     }
   }
 

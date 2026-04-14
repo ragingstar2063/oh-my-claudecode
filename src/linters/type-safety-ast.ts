@@ -134,11 +134,10 @@ export function lintFileAST(filePath: string, config?: ASTLinterConfig): ASTType
       node.body
     ) {
       // Skip constructors and getters/setters
-      const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined
       const isConstructor =
         ts.isFunctionDeclaration(node) && node.name?.text === "constructor"
       const isGetterSetter =
-        modifiers?.some(m => m.kind === ts.SyntaxKind.GetKeyword || m.kind === ts.SyntaxKind.SetKeyword)
+        ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)
 
       if (!isConstructor && !isGetterSetter) {
         const pos = sourceFile.getLineAndCharacterOfPosition(node.getStart())
