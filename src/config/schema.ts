@@ -126,6 +126,7 @@ export const HookNameSchema = z.enum([
   "yith-capture",             // Continuous Yith ingestion — fires on Stop
   "web-research-detector",    // Enforce web research when patterns detected
   "design-detector",          // Route design tasks to The Artisan
+  "ssh-tmux-reminder",        // Remind to use tmux/screen for SSH sessions
 ])
 
 export type HookName = z.infer<typeof HookNameSchema>

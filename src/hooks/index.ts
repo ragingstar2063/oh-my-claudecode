@@ -10,6 +10,7 @@ export { MEMORY_OVERRIDE_HOOK_SCRIPT, getMemoryOverrideHookConfig } from "./memo
 export { YITH_CAPTURE_HOOK_SCRIPT, getYithCaptureHookConfig } from "./yith-capture.js"
 export { WEB_RESEARCH_DETECTOR_HOOK_SCRIPT, getWebResearchDetectorHookConfig } from "./web-research-hook.js"
 export { DESIGN_DETECTOR_HOOK_SCRIPT, getDesignDetectorHookConfig } from "./design-detector-hook.js"
+export { SSH_TMUX_REMINDER_HOOK_SCRIPT, getSshTmuxReminderHookConfig } from "./ssh-tmux-reminder.js"
 
 export interface HookDefinition {
   name: HookName
@@ -59,6 +60,10 @@ import {
   DESIGN_DETECTOR_HOOK_SCRIPT,
   getDesignDetectorHookConfig,
 } from "./design-detector-hook.js"
+import {
+  SSH_TMUX_REMINDER_HOOK_SCRIPT,
+  getSshTmuxReminderHookConfig,
+} from "./ssh-tmux-reminder.js"
 
 /** All hook definitions for the plugin */
 export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
@@ -131,6 +136,13 @@ export const ALL_HOOK_DEFINITIONS: HookDefinition[] = [
     scriptPath: "~/.claude/hooks/design-detector.sh",
     scriptContent: DESIGN_DETECTOR_HOOK_SCRIPT,
     config: getDesignDetectorHookConfig(),
+  },
+  {
+    name: "ssh-tmux-reminder",
+    event: "PreToolUse",
+    scriptPath: "~/.claude/hooks/ssh-tmux-reminder.sh",
+    scriptContent: SSH_TMUX_REMINDER_HOOK_SCRIPT,
+    config: getSshTmuxReminderHookConfig(),
   },
 ]
 
